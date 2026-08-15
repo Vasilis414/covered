@@ -1,6 +1,7 @@
 import { File, Paths } from 'expo-file-system';
 
 import { displayName, mimeTypeFor } from '@/lib/attachments';
+import type { StorageItem } from '@/store/storage';
 import type { WarrantyItem } from '@/types/item';
 
 /**
@@ -30,10 +31,15 @@ type BackedUpItem = Omit<WarrantyItem, 'photoUris'> & {
   attachments?: { id: string; name: string }[];
 };
 
+type BackedUpStorageItem = Omit<StorageItem, 'photoUris'> & {
+  attachments?: { id: string; name: string }[];
+};
+
 export type BackupManifest = {
-  version: 1;
+  version: 2;
   updatedAt: string;
   items: BackedUpItem[];
+  storageItems: BackedUpStorageItem[];
 };
 
 export type BackupResult = {
@@ -98,27 +104,26 @@ async function findManifestId(token: string): Promise<string | null> {
 }
 
 /**
- * Multipart upload: metadata part, then the bytes. Drive has no simpler way to
- * create a file and set its parent in one request. Capped at 5 MB by Drive,
- * so `uploadFile` sends anything larger the resumable way instead.
+ * Uploads a file via simple/multipart upload.
+ *
+ * For metadata only (or files under MULTIPART_LIMIT), this does the upload in
+ * one HTTP request. It builds a standard multipart/related body holding the
+ * metadata JSON block first and the file bytes second.
  */
 async function uploadMultipart(
   token: string,
   name: string,
   mimeType: string,
-  body: string,
+  base64: string,
   existingId?: string | null,
 ): Promise<string> {
-  const boundary = `covered${Math.random().toString(36).slice(2)}`;
-  const metadata = existingId
-    ? { name }
-    : { name, parents: ['appDataFolder'] };
+  const metadata = { name, parents: existingId ? undefined : ['appDataFolder'] };
+  const boundary = 'covered_multipart_boundary';
 
-  const payload =
-    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
-    `${JSON.stringify(metadata)}\r\n` +
-    `--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n` +
-    `${body}\r\n--${boundary}--`;
+  const body =
+    `\r\n--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: ${mimeType}\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64}\r\n` +
+    `--${boundary}--`;
 
   const url = existingId
     ? `${DRIVE_UPLOAD}/${existingId}?uploadType=multipart`
@@ -127,63 +132,68 @@ async function uploadMultipart(
   const response = await driveFetch(token, url, {
     method: existingId ? 'PATCH' : 'POST',
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-    body: payload,
+    body,
   });
 
   if (!response.ok) throw await driveError(response, 'Drive upload failed');
-  const created = (await response.json()) as { id: string };
-  return created.id;
+  const bodyJson = (await response.json()) as { id: string };
+  return bodyJson.id;
 }
 
 /**
- * Two-step upload for large files: open a session, then send the content to the
- * URL Drive hands back. Costs an extra round trip, which is why small files
- * still go the multipart way, but it has no size ceiling worth worrying about.
+ * Uploads a file in chunks using a resumable session.
+ *
+ * Opens a session first by POSTing the metadata, which hands back a session
+ * URL. We then upload the base64 content in one final PUT to that URL. Crucial
+ * for PDF manuals that are larger than Google's multipart limit.
  */
 async function uploadResumable(
   token: string,
   name: string,
   mimeType: string,
-  body: string,
+  base64: string,
   existingId?: string | null,
 ): Promise<string> {
-  const metadata = existingId ? { name } : { name, parents: ['appDataFolder'] };
-  const startUrl = existingId
+  const metadata = { name, parents: existingId ? undefined : ['appDataFolder'] };
+  const sessionUrl = existingId
     ? `${DRIVE_UPLOAD}/${existingId}?uploadType=resumable`
     : `${DRIVE_UPLOAD}?uploadType=resumable`;
 
-  const start = await driveFetch(token, startUrl, {
+  const initResponse = await driveFetch(token, sessionUrl, {
     method: existingId ? 'PATCH' : 'POST',
     headers: { 'Content-Type': 'application/json; charset=UTF-8' },
     body: JSON.stringify(metadata),
   });
-  if (!start.ok) throw await driveError(start, 'Drive upload session failed');
 
-  const session = start.headers.get('location');
-  if (!session) throw new Error('Drive upload session failed — no session URL');
+  if (!initResponse.ok) throw await driveError(initResponse, 'Resumable start failed');
+  const uploadUrl = initResponse.headers.get('Location');
+  if (!uploadUrl) throw new Error('Drive gave no upload location');
 
-  // The session URL carries its own credentials, so it is fetched directly.
-  const upload = await fetch(session, {
+  // Perform the actual content upload
+  const response = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: { 'Content-Type': mimeType },
-    body,
+    headers: {
+      'Content-Type': mimeType,
+      'Content-Transfer-Encoding': 'base64',
+    },
+    body: base64,
   });
-  if (!upload.ok) throw await driveError(upload, 'Drive upload failed');
 
-  const created = (await upload.json()) as { id: string };
-  return created.id;
+  if (!response.ok) throw await driveError(response, 'Resumable chunk failed');
+  const bodyJson = (await response.json()) as { id: string };
+  return bodyJson.id;
 }
 
 async function uploadFile(
   token: string,
   name: string,
   mimeType: string,
-  body: string,
+  base64: string,
   existingId?: string | null,
 ): Promise<string> {
-  return body.length > MULTIPART_LIMIT
-    ? uploadResumable(token, name, mimeType, body, existingId)
-    : uploadMultipart(token, name, mimeType, body, existingId);
+  return base64.length > MULTIPART_LIMIT
+    ? uploadResumable(token, name, mimeType, base64, existingId)
+    : uploadMultipart(token, name, mimeType, base64, existingId);
 }
 
 async function downloadText(token: string, fileId: string): Promise<string> {
@@ -199,50 +209,59 @@ function photoBackupName(uri: string): string {
 export async function backupToDrive(
   token: string,
   items: WarrantyItem[],
-  /** Photo uri -> Drive id from the last run, so unchanged photos aren't re-sent. */
+  storageItems: StorageItem[],
   knownPhotos: Record<string, string> = {},
 ): Promise<{ result: BackupResult; photoMap: Record<string, string> }> {
   const photoMap: Record<string, string> = { ...knownPhotos };
   const failed: string[] = [];
   let uploaded = 0;
 
-  const backedUp: BackedUpItem[] = [];
-  for (const item of items) {
-    const attachments: { id: string; name: string }[] = [];
-
-    for (const uri of item.photoUris) {
-      const name = photoBackupName(uri);
-      if (photoMap[uri]) {
-        attachments.push({ id: photoMap[uri], name });
-        continue;
-      }
-      try {
-        const base64 = await new File(uri).base64();
-        if (base64.length > MAX_ATTACHMENT_BYTES) {
-          throw new Error('file is too large to back up');
+  const processItemsList = async <T extends { photoUris: string[]; name: string }, R>(
+    list: T[],
+    wrap: (item: T, attachments: { id: string; name: string }[]) => R
+  ): Promise<R[]> => {
+    const backedUpList: R[] = [];
+    for (const item of list) {
+      const attachments: { id: string; name: string }[] = [];
+      for (const uri of item.photoUris) {
+        const name = photoBackupName(uri);
+        if (photoMap[uri]) {
+          attachments.push({ id: photoMap[uri], name });
+          continue;
         }
-        const id = await uploadFile(token, name, mimeTypeFor(uri), base64);
-        photoMap[uri] = id;
-        attachments.push({ id, name });
-        uploaded += 1;
-      } catch {
-        /**
-         * One unreadable file shouldn't cost the rest of the backup — but it
-         * must not pass unnoticed either. Swallowing this silently is how a PDF
-         * went missing while the app reported a clean backup.
-         */
-        failed.push(displayName(uri));
+        try {
+          const base64 = await new File(uri).base64();
+          if (base64.length > MAX_ATTACHMENT_BYTES) {
+            throw new Error('file is too large to back up');
+          }
+          const id = await uploadFile(token, name, mimeTypeFor(uri), base64);
+          photoMap[uri] = id;
+          attachments.push({ id, name });
+          uploaded += 1;
+        } catch {
+          failed.push(displayName(uri));
+        }
       }
+      backedUpList.push(wrap(item, attachments));
     }
+    return backedUpList;
+  };
 
+  const backedUpItems = await processItemsList<WarrantyItem, BackedUpItem>(items, (item, attachments) => {
     const { photoUris, ...rest } = item;
-    backedUp.push({ ...rest, attachments });
-  }
+    return { ...rest, attachments };
+  });
+
+  const backedUpStorageItems = await processItemsList<StorageItem, BackedUpStorageItem>(storageItems, (item, attachments) => {
+    const { photoUris, ...rest } = item;
+    return { ...rest, attachments };
+  });
 
   const manifest: BackupManifest = {
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
-    items: backedUp,
+    items: backedUpItems,
+    storageItems: backedUpStorageItems,
   };
 
   const existing = await findManifestId(token);
@@ -250,7 +269,7 @@ export async function backupToDrive(
 
   return {
     result: {
-      itemCount: items.length,
+      itemCount: items.length + storageItems.length,
       photoCount: uploaded,
       updatedAt: manifest.updatedAt,
       failed,
@@ -260,38 +279,68 @@ export async function backupToDrive(
 }
 
 /** Pulls the backup down, writing photos back to local storage. */
-export async function restoreFromDrive(token: string): Promise<WarrantyItem[] | null> {
+export async function restoreFromDrive(
+  token: string
+): Promise<{ items: WarrantyItem[]; storageItems: StorageItem[] } | null> {
   const manifestId = await findManifestId(token);
   if (!manifestId) return null;
 
-  const manifest = JSON.parse(await downloadText(token, manifestId)) as BackupManifest;
+  const manifest = JSON.parse(await downloadText(token, manifestId)) as {
+    version?: number;
+    items?: BackedUpItem[];
+    storageItems?: BackedUpStorageItem[];
+  };
+
   if (!Array.isArray(manifest.items)) return null;
 
-  const restored: WarrantyItem[] = [];
+  const restoredItems: WarrantyItem[] = [];
+  const restoredStorageItems: StorageItem[] = [];
 
-  for (const item of manifest.items) {
-    const { photoFileIds, attachments, ...rest } = item;
-    const photoUris: string[] = [];
+  const restoreList = async <T extends { attachments?: { id: string; name: string }[]; photoFileIds?: string[] }, R>(
+    backedUpList: T[],
+    onRestored: (item: T, photoUris: string[]) => R
+  ) => {
+    const resultList: R[] = [];
+    for (const item of backedUpList) {
+      const { photoFileIds, attachments } = item;
+      const photoUris: string[] = [];
 
-    // Older backups stored bare ids and were always JPEGs.
-    const entries =
-      attachments ?? (photoFileIds ?? []).map((id) => ({ id, name: `${id}.jpg` }));
+      const entries =
+        attachments ?? (photoFileIds ?? []).map((id) => ({ id, name: `${id}.jpg` }));
 
-    for (const entry of entries) {
-      try {
-        const base64 = await downloadText(token, entry.id);
-        const extension = entry.name.split('.').pop()?.toLowerCase() ?? 'jpg';
-        const target = new File(Paths.document, 'photos', `${entry.id}.${extension}`);
-        target.parentDirectory.create({ intermediates: true, idempotent: true });
-        target.write(base64, { encoding: 'base64' });
-        photoUris.push(target.uri);
-      } catch {
-        // Skip a file that won't come back rather than losing the item.
+      for (const entry of entries) {
+        try {
+          const base64 = await downloadText(token, entry.id);
+          const extension = entry.name.split('.').pop()?.toLowerCase() ?? 'jpg';
+          const target = new File(Paths.document, 'photos', `${entry.id}.${extension}`);
+          await target.parentDirectory.create({ intermediates: true, idempotent: true });
+          await target.write(base64, { encoding: 'base64' });
+          photoUris.push(target.uri);
+        } catch {
+          // Skip a file that won't come back rather than losing the item.
+        }
       }
+      resultList.push(onRestored(item, photoUris));
     }
+    return resultList;
+  };
 
-    restored.push({ ...rest, photoUris } as WarrantyItem);
+  const finalItems = await restoreList<BackedUpItem, WarrantyItem>(manifest.items, (item, photoUris) => {
+    const { photoFileIds, attachments, ...rest } = item;
+    return { ...rest, photoUris } as WarrantyItem;
+  });
+  restoredItems.push(...finalItems);
+
+  if (manifest.version === 2 && Array.isArray(manifest.storageItems)) {
+    const finalStorage = await restoreList<BackedUpStorageItem, StorageItem>(manifest.storageItems, (item, photoUris) => {
+      const { attachments, ...rest } = item;
+      return { ...rest, photoUris } as StorageItem;
+    });
+    restoredStorageItems.push(...finalStorage);
   }
 
-  return restored;
+  return {
+    items: restoredItems,
+    storageItems: restoredStorageItems,
+  };
 }

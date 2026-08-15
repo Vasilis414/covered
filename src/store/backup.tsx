@@ -195,7 +195,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
           }
         } else {
           // Google Drive flow
-          const { result, photoMap: updated } = await backupToDrive(token, items, photoMap.current);
+          const { result, photoMap: updated } = await backupToDrive(token, items, storageItems, photoMap.current);
           photoMap.current = updated;
           lastPayload.current = payload;
           await persist(result.updatedAt);
@@ -288,7 +288,8 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         } else {
           const remote = await restoreFromDrive(token);
           if (!remote) return;
-          remoteWarranty = remote;
+          remoteWarranty = remote.items;
+          remoteStorage = remote.storageItems;
         }
 
         const addedWarranty = await mergeItems(remoteWarranty);
@@ -390,7 +391,8 @@ export function BackupProvider({ children }: { children: ReactNode }) {
           setMessage('No backup found yet.');
           return null;
         }
-        restoredWarranty = restored;
+        restoredWarranty = restored.items;
+        restoredStorage = restored.storageItems;
       }
 
       const addedWarranty = await mergeItems(restoredWarranty);
