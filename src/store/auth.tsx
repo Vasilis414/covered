@@ -323,7 +323,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const redirectUri = AuthSession.makeRedirectUri({ scheme: 'covered' });
       const state = Math.random().toString(36).substring(7);
-      const host = 'https://plenum-cloud.fly.dev';
+      const host = 'https://plenum.gr';
       const client_id = 'covered-app';
       const authUrl = `${host}/oauth/authorize?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${state}`;
 

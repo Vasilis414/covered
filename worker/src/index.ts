@@ -153,7 +153,7 @@ async function authenticate(request: Request, env: Env): Promise<GoogleIdentity 
   if (token.startsWith('plenum:')) {
     const plenumToken = token.slice('plenum:'.length);
     try {
-      const response = await fetch('https://plenum-cloud.fly.dev/oauth/userinfo', {
+      const response = await fetch('https://plenum.gr/oauth/userinfo', {
         headers: { Authorization: `Bearer ${plenumToken}` }
       });
       if (!response.ok) return null;
