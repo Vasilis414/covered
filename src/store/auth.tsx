@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as AuthSession from 'expo-auth-session';
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
 import {
   createContext,
   use,
@@ -14,6 +16,8 @@ import { Alert, AppState, Platform } from 'react-native';
 
 import { fetchEntitlement, type Entitlement } from '@/lib/api';
 import { DRIVE_SCOPE } from '@/lib/drive-backup';
+
+WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY = 'covered.google.idtoken';
 
@@ -95,11 +99,13 @@ function loadGoogle(): GoogleSigninModule['GoogleSignin'] | null {
 type AuthContextValue = {
   ready: boolean;
   signedIn: boolean;
+  authProvider: 'google' | 'plenum' | null;
   entitlement: Entitlement | null;
   signingIn: boolean;
   /** False in Expo Go, where the native module is absent. */
   available: boolean;
   signIn: () => Promise<void>;
+  signInWithPlenum: () => Promise<void>;
   /** Fallback login for platforms without Google Sign-In, e.g. Expo Go. */
   signInWithCode: (code: string) => Promise<boolean>;
   signOut: () => Promise<void>;
@@ -195,6 +201,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Offline. Keep the session and the cached plan; try again next time.
       if (result.reason === 'network') return;
 
+      // Plenum SSO tokens cannot be silently renewed via Google.
+      if (token.startsWith('plenum:')) {
+        await clearSession();
+        return;
+      }
+
       const fresh = await renewToken();
       if (!stillMounted()) return;
       if (!fresh) {
@@ -270,6 +282,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [idToken, verifySession]);
 
+  const authProvider = useMemo<'google' | 'plenum' | null>(() => {
+    if (!idToken) return null;
+    if (idToken.startsWith('plenum:')) return 'plenum';
+    return 'google';
+  }, [idToken]);
+
   const signIn = useCallback(async () => {
     if (!google) {
       Alert.alert(
@@ -299,6 +317,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSigningIn(false);
     }
   }, [google, applyToken]);
+
+  const signInWithPlenum = useCallback(async () => {
+    setSigningIn(true);
+    try {
+      const redirectUri = AuthSession.makeRedirectUri({ scheme: 'covered' });
+      const state = Math.random().toString(36).substring(7);
+      const host = 'https://plenum-cloud.fly.dev';
+      const client_id = 'covered-app';
+      const authUrl = `${host}/oauth/authorize?client_id=${client_id}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${state}`;
+
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUri);
+      
+      if (result.type === 'success' && result.url) {
+        const getQueryParam = (url: string, param: string) => {
+          const regex = new RegExp('[?&]' + param + '=([^&#]*)');
+          const match = regex.exec(url);
+          return match === null ? null : decodeURIComponent(match[1].replace(/\+/g, ' '));
+        };
+
+        const code = getQueryParam(result.url, 'code');
+        const returnedState = getQueryParam(result.url, 'state');
+
+        if (!code) {
+          Alert.alert('Authentication Failed', 'No authorization code returned.');
+          return;
+        }
+        if (returnedState !== state) {
+          Alert.alert('Authentication Failed', 'CSRF verification failed (state mismatch).');
+          return;
+        }
+
+        const tokenResponse = await fetch(`${host}/oauth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: redirectUri,
+            client_id,
+          }),
+        });
+
+        if (!tokenResponse.ok) {
+          const errText = await tokenResponse.text();
+          throw new Error(`Token exchange failed: ${errText}`);
+        }
+
+        const tokens = (await tokenResponse.json()) as { access_token: string };
+        const plenumToken = `plenum:${tokens.access_token}`;
+
+        await applyToken(plenumToken);
+      }
+    } catch (error) {
+      Alert.alert('Authentication Error', String(error));
+    } finally {
+      setSigningIn(false);
+    }
+  }, [applyToken]);
 
   /**
    * Signs in with an access code instead of Google.
@@ -357,10 +433,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       ready,
       signedIn: Boolean(idToken),
+      authProvider,
       entitlement,
       signingIn,
       available,
       signIn,
+      signInWithPlenum,
       signInWithCode,
       signOut,
       refresh,
@@ -368,7 +446,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       getAccessToken,
       setEntitlement,
     }),
-    [ready, idToken, entitlement, signingIn, available, signIn, signInWithCode, signOut, refresh, getIdToken, getAccessToken],
+    [ready, idToken, authProvider, entitlement, signingIn, available, signIn, signInWithPlenum, signInWithCode, signOut, refresh, getIdToken, getAccessToken],
   );
 
   return <AuthContext value={value}>{children}</AuthContext>;

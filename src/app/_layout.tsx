@@ -10,11 +10,14 @@ import { AuthProvider } from '@/store/auth';
 import { BackupProvider } from '@/store/backup';
 import { ItemsProvider, useItems } from '@/store/items';
 import { SettingsProvider } from '@/store/settings';
+import { StorageProvider, useStorage } from '@/store/storage';
 
 SplashScreen.preventAutoHideAsync();
 
 function RootNavigator() {
-  const { ready } = useItems();
+  const { ready: itemsReady } = useItems();
+  const { ready: storageReady } = useStorage();
+  const ready = itemsReady && storageReady;
   const scheme = useResolvedScheme();
   const theme = useTheme();
 
@@ -34,6 +37,7 @@ function RootNavigator() {
         }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="add" options={{ presentation: 'modal', headerShown: false }} />
+        <Stack.Screen name="storage-add" options={{ presentation: 'modal', headerShown: false }} />
         <Stack.Screen name="item/[id]" options={{ title: '', headerBackTitle: 'Back' }} />
       </Stack>
       {/* Follows the in-app theme, not the OS, so an override looks right. */}
@@ -48,9 +52,11 @@ export default function RootLayout() {
       <SettingsProvider>
         <AuthProvider>
           <ItemsProvider>
-            <BackupProvider>
-              <RootNavigator />
-            </BackupProvider>
+            <StorageProvider>
+              <BackupProvider>
+                <RootNavigator />
+              </BackupProvider>
+            </StorageProvider>
           </ItemsProvider>
         </AuthProvider>
       </SettingsProvider>

@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { File, Paths } from 'expo-file-system';
 import {
   createContext,
   use,
@@ -9,11 +10,14 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { AppState } from 'react-native';
+import { AppState, Platform } from 'react-native';
 
-import { backupToDrive, restoreFromDrive } from '@/lib/drive-backup';
+import { API_BASE } from '@/lib/api';
+import { mimeTypeFor } from '@/lib/attachments';
+import { backupToDrive, restoreFromDrive, DRIVE_SCOPE } from '@/lib/drive-backup';
 import { useAuth } from '@/store/auth';
 import { useItems } from '@/store/items';
+import { useStorage, type StorageItem } from '@/store/storage';
 import type { WarrantyItem } from '@/types/item';
 
 const STATE_KEY = 'covered.backup.state.v1';
@@ -22,7 +26,7 @@ const DEBOUNCE_MS = 8_000;
 
 type PersistedState = {
   lastBackupAt?: string;
-  /** Local photo uri -> Drive file id, so unchanged photos aren't re-uploaded. */
+  /** Local photo uri -> Drive file id or server url, so unchanged photos aren't re-uploaded. */
   photoMap?: Record<string, string>;
 };
 
@@ -36,9 +40,33 @@ type BackupContextValue = {
 
 const BackupContext = createContext<BackupContextValue | null>(null);
 
+async function uploadFileToServer(token: string, localUri: string): Promise<string> {
+  const base64 = await new File(localUri).base64();
+  const name = localUri.split('/').pop() || 'upload';
+  const mimeType = mimeTypeFor(localUri);
+
+  const response = await fetch(`${API_BASE}/storage/upload`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ name, mimeType, content: base64 })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    throw new Error((errorBody as { error?: string }).error || `Upload failed with status ${response.status}`);
+  }
+
+  const result = (await response.json()) as { url: string };
+  return result.url;
+}
+
 export function BackupProvider({ children }: { children: ReactNode }) {
-  const { items, ready, mergeItems } = useItems();
-  const { entitlement, getAccessToken, signedIn } = useAuth();
+  const { items, ready: itemsReady, mergeItems } = useItems();
+  const { storageItems, ready: storageReady, mergeStorageItems } = useStorage();
+  const { entitlement, getAccessToken, getIdToken, signedIn, authProvider } = useAuth();
 
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'error'>('idle');
@@ -50,6 +78,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
   /** Snapshot of what was last uploaded, so we skip no-op backups. */
   const lastPayload = useRef<string | null>(null);
 
+  const ready = itemsReady && storageReady;
   const premium = Boolean(entitlement?.paid);
 
   useEffect(() => {
@@ -75,11 +104,11 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     async (reason: 'auto' | 'manual') => {
       if (running.current || !premium) return;
 
-      const payload = JSON.stringify(items);
+      const payload = JSON.stringify({ items, storageItems });
       // Nothing changed since the last upload, so don't spend the round trip.
       if (reason === 'auto' && payload === lastPayload.current) return;
 
-      const token = await getAccessToken();
+      const token = authProvider === 'plenum' ? getIdToken() : await getAccessToken();
       if (!token) {
         if (reason === 'manual') {
           setStatus('error');
@@ -91,30 +120,101 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       running.current = true;
       setStatus('running');
       try {
-        const { result, photoMap: updated } = await backupToDrive(token, items, photoMap.current);
-        photoMap.current = updated;
-        lastPayload.current = payload;
-        await persist(result.updatedAt);
+        if (authProvider === 'plenum') {
+          const failed: string[] = [];
+          let uploaded = 0;
+          const updatedPhotoMap = { ...photoMap.current };
 
-        const summary =
-          `Backed up ${result.itemCount} item${result.itemCount === 1 ? '' : 's'}` +
-          (result.photoCount
-            ? ` and ${result.photoCount} new file${result.photoCount === 1 ? '' : 's'}`
-            : '');
+          const processItems = async <T extends { photoUris: string[]; name: string }>(list: T[]): Promise<T[]> => {
+            const result: T[] = [];
+            for (const item of list) {
+              const photoUris: string[] = [];
+              for (const uri of item.photoUris) {
+                if (uri.startsWith('http://') || uri.startsWith('https://')) {
+                  photoUris.push(uri);
+                  continue;
+                }
+                if (updatedPhotoMap[uri]) {
+                  photoUris.push(updatedPhotoMap[uri]);
+                  continue;
+                }
+                try {
+                  const serverUrl = await uploadFileToServer(token, uri);
+                  updatedPhotoMap[uri] = serverUrl;
+                  photoUris.push(serverUrl);
+                  uploaded += 1;
+                } catch {
+                  failed.push(item.name.slice(0, 30));
+                }
+              }
+              result.push({ ...item, photoUris });
+            }
+            return result;
+          };
 
-        /**
-         * A partial backup is reported as a problem, not a success. It used to
-         * say "Backed up 4 items" whether or not every attachment made it, so a
-         * receipt that failed to upload looked exactly like one that didn't.
-         */
-        if (result.failed.length > 0) {
-          setStatus('error');
-          setMessage(
-            `${summary}, but ${result.failed.length} file${result.failed.length === 1 ? '' : 's'} could not be saved: ${result.failed.join(', ')}`,
-          );
+          const processedItems = await processItems(items);
+          const processedStorageItems = await processItems(storageItems);
+
+          photoMap.current = updatedPhotoMap;
+
+          const backupResponse = await fetch(`${API_BASE}/backup`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              items: {
+                items: processedItems,
+                storageItems: processedStorageItems
+              },
+              device: Platform.OS
+            })
+          });
+
+          if (!backupResponse.ok) {
+            const errorBody = await backupResponse.json().catch(() => ({}));
+            throw new Error((errorBody as { error?: string }).error || `Backup failed with status ${backupResponse.status}`);
+          }
+
+          const backupResult = await backupResponse.json() as { itemCount: number };
+          lastPayload.current = payload;
+          const nowStr = new Date().toISOString();
+          await persist(nowStr);
+
+          const summary =
+            `Backed up ${backupResult.itemCount} item${backupResult.itemCount === 1 ? '' : 's'}` +
+            (uploaded ? ` and ${uploaded} new file${uploaded === 1 ? '' : 's'}` : '');
+
+          if (failed.length > 0) {
+            setStatus('error');
+            setMessage(`${summary}, but ${failed.length} file${failed.length === 1 ? '' : 's'} could not be saved.`);
+          } else {
+            setStatus('idle');
+            setMessage(summary);
+          }
         } else {
-          setStatus('idle');
-          setMessage(summary);
+          // Google Drive flow
+          const { result, photoMap: updated } = await backupToDrive(token, items, photoMap.current);
+          photoMap.current = updated;
+          lastPayload.current = payload;
+          await persist(result.updatedAt);
+
+          const summary =
+            `Backed up ${result.itemCount} item${result.itemCount === 1 ? '' : 's'}` +
+            (result.photoCount
+              ? ` and ${result.photoCount} new file${result.photoCount === 1 ? '' : 's'}`
+              : '');
+
+          if (result.failed.length > 0) {
+            setStatus('error');
+            setMessage(
+              `${summary}, but ${result.failed.length} file${result.failed.length === 1 ? '' : 's'} could not be saved: ${result.failed.join(', ')}`,
+            );
+          } else {
+            setStatus('idle');
+            setMessage(summary);
+          }
         }
       } catch (error) {
         setStatus('error');
@@ -123,7 +223,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         running.current = false;
       }
     },
-    [premium, items, getAccessToken, persist],
+    [premium, items, storageItems, authProvider, getIdToken, getAccessToken, persist],
   );
 
   // Auto-backup: debounce so a burst of edits produces one upload.
@@ -134,7 +234,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [items, ready, premium, run]);
+  }, [items, storageItems, ready, premium, run]);
 
   // Also catch the app going to the background, which is when edits usually stop.
   useEffect(() => {
@@ -157,25 +257,56 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     pulled.current = true;
 
     void (async () => {
-      const token = await getAccessToken();
+      const token = authProvider === 'plenum' ? getIdToken() : await getAccessToken();
       if (!token) return;
       try {
-        const remote = await restoreFromDrive(token);
-        if (!remote?.length) return;
-        const added = await mergeItems(remote);
-        if (added > 0) {
-          setMessage(`Added ${added} item${added === 1 ? '' : 's'} from your backup`);
+        let remoteWarranty: WarrantyItem[] = [];
+        let remoteStorage: StorageItem[] = [];
+
+        if (authProvider === 'plenum') {
+          const response = await fetch(`${API_BASE}/backup`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!response.ok) return;
+          const data = await response.json() as { items?: unknown };
+          const remote = data.items;
+          if (!remote || typeof remote !== 'object') return;
+
+          let rawWarranty: WarrantyItem[] = [];
+          let rawStorage: StorageItem[] = [];
+
+          if (Array.isArray(remote)) {
+            rawWarranty = remote;
+          } else {
+            const obj = remote as { items?: WarrantyItem[]; storageItems?: StorageItem[] };
+            rawWarranty = Array.isArray(obj.items) ? obj.items : [];
+            rawStorage = Array.isArray(obj.storageItems) ? obj.storageItems : [];
+          }
+
+          remoteWarranty = rawWarranty;
+          remoteStorage = rawStorage;
+        } else {
+          const remote = await restoreFromDrive(token);
+          if (!remote) return;
+          remoteWarranty = remote;
+        }
+
+        const addedWarranty = await mergeItems(remoteWarranty);
+        const addedStorage = await mergeStorageItems(remoteStorage);
+        const totalAdded = addedWarranty + addedStorage;
+        if (totalAdded > 0) {
+          setMessage(`Added ${totalAdded} item${totalAdded === 1 ? '' : 's'} from your backup`);
         }
       } catch {
-        // A failed pull shouldn't block using the app; the manual button remains.
+        // A failed pull shouldn't block using the app.
       }
     })();
-  }, [ready, signedIn, premium, getAccessToken, mergeItems]);
+  }, [ready, signedIn, premium, authProvider, getIdToken, getAccessToken, mergeItems, mergeStorageItems]);
 
   const backupNow = useCallback(() => run('manual'), [run]);
 
   const restoreNow = useCallback(async () => {
-    const token = await getAccessToken();
+    const token = authProvider === 'plenum' ? getIdToken() : await getAccessToken();
     if (!token) {
       setStatus('error');
       setMessage('Could not reach your backup — sign out and back in, then try again.');
@@ -183,29 +314,104 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     }
     setStatus('running');
     try {
-      const restored: WarrantyItem[] | null = await restoreFromDrive(token);
-      if (!restored) {
-        setStatus('idle');
-        setMessage('No backup found yet.');
-        return null;
+      let restoredWarranty: WarrantyItem[] = [];
+      let restoredStorage: StorageItem[] = [];
+
+      if (authProvider === 'plenum') {
+        const response = await fetch(`${API_BASE}/backup`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!response.ok) throw new Error(`Restore failed with status ${response.status}`);
+        const data = await response.json() as { items?: unknown };
+        const remote = data.items;
+        if (!remote || typeof remote !== 'object') {
+          setStatus('idle');
+          setMessage('No backup found yet.');
+          return null;
+        }
+
+        let rawWarranty: WarrantyItem[] = [];
+        let rawStorage: StorageItem[] = [];
+
+        if (Array.isArray(remote)) {
+          rawWarranty = remote;
+        } else {
+          const obj = remote as { items?: WarrantyItem[]; storageItems?: StorageItem[] };
+          rawWarranty = Array.isArray(obj.items) ? obj.items : [];
+          rawStorage = Array.isArray(obj.storageItems) ? obj.storageItems : [];
+        }
+
+        const downloadPhotos = async <T extends { photoUris: string[]; id: string }>(list: T[]): Promise<T[]> => {
+          const result: T[] = [];
+          for (const item of list) {
+            const photoUris: string[] = [];
+            for (const uri of item.photoUris) {
+              if (uri.startsWith('file://')) {
+                photoUris.push(uri);
+                continue;
+              }
+              try {
+                const fileId = uri.split('/').pop() || '';
+                const fileResponse = await fetch(uri, {
+                  headers: { Authorization: `Bearer ${token}` }
+                });
+                if (!fileResponse.ok) throw new Error('File download failed');
+                const blob = await fileResponse.blob();
+                const base64 = await new Promise<string>((resolve, reject) => {
+                  const reader = new FileReader();
+                  reader.onloadend = () => {
+                    const res = reader.result as string;
+                    resolve(res.split(',')[1]);
+                  };
+                  reader.onerror = reject;
+                  reader.readAsDataURL(blob);
+                });
+
+                const extension = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
+                const target = new File(Paths.document, 'photos', `${fileId}.${extension}`);
+                await target.parentDirectory.create({ intermediates: true, idempotent: true });
+                await target.write(base64, { encoding: 'base64' });
+                photoUris.push(target.uri);
+              } catch {
+                photoUris.push(uri);
+              }
+            }
+            result.push({ ...item, photoUris });
+          }
+          return result;
+        };
+
+        restoredWarranty = await downloadPhotos(rawWarranty);
+        restoredStorage = await downloadPhotos(rawStorage);
+      } else {
+        const restored = await restoreFromDrive(token);
+        if (!restored) {
+          setStatus('idle');
+          setMessage('No backup found yet.');
+          return null;
+        }
+        restoredWarranty = restored;
       }
-      const added = await mergeItems(restored);
-      // Restored photos are new local files; the old mapping no longer applies.
+
+      const addedWarranty = await mergeItems(restoredWarranty);
+      const addedStorage = await mergeStorageItems(restoredStorage);
+      const totalAdded = addedWarranty + addedStorage;
+
       photoMap.current = {};
       lastPayload.current = null;
       setStatus('idle');
       setMessage(
-        added === 0
+        totalAdded === 0
           ? 'Backup already matches what is on this phone.'
-          : `Restored ${added} item${added === 1 ? '' : 's'}`,
+          : `Restored ${totalAdded} item${totalAdded === 1 ? '' : 's'}`,
       );
-      return added;
+      return totalAdded;
     } catch (error) {
       setStatus('error');
       setMessage(String(error));
       return null;
     }
-  }, [getAccessToken, mergeItems]);
+  }, [authProvider, getIdToken, getAccessToken, mergeItems, mergeStorageItems]);
 
   const value = useMemo(
     () => ({ lastBackupAt, status, message, backupNow, restoreNow }),

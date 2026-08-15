@@ -95,6 +95,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 function isPaid(account: Account): boolean {
+  if (account.userId.startsWith('plenum:')) return true;
   if (account.plan === 'free') return false;
   if (!account.expiresAt) return true;
   return new Date(account.expiresAt).getTime() > Date.now();
@@ -148,6 +149,21 @@ async function authenticate(request: Request, env: Env): Promise<GoogleIdentity 
   const header = request.headers.get('Authorization') ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
   if (!token) return null;
+
+  if (token.startsWith('plenum:')) {
+    const plenumToken = token.slice('plenum:'.length);
+    try {
+      const response = await fetch('https://plenum-cloud.fly.dev/oauth/userinfo', {
+        headers: { Authorization: `Bearer ${plenumToken}` }
+      });
+      if (!response.ok) return null;
+      const profile = await response.json() as { sub: string; email?: string; name?: string };
+      if (!profile || !profile.sub) return null;
+      return { sub: 'plenum:' + profile.sub, email: profile.email, name: profile.name };
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * Access-code login, for platforms where Google Sign-In can't run — Expo Go
@@ -271,10 +287,36 @@ async function handleBackupPut(request: Request, env: Env, account: Account): Pr
     return json({ error: 'invalid_json' }, 400);
   }
 
-  if (!Array.isArray(body.items)) return json({ error: 'missing_items' }, 400);
+  if (!body.items) return json({ error: 'missing_items' }, 400);
 
   const payload = JSON.stringify(body.items);
-  if (payload.length > MAX_BACKUP_BYTES) return json({ error: 'backup_too_large' }, 413);
+
+  if (account.userId.startsWith('plenum:')) {
+    // Enforce 50MB total storage limit for Plenum SSO users (JSON payload + user uploaded files)
+    const filesSizeRow = await env.DB.prepare(
+      `SELECT COALESCE(SUM(size), 0) as total FROM user_files WHERE user_id = ?`
+    )
+      .bind(account.userId)
+      .first<{ total: number }>();
+    const currentFilesSize = filesSizeRow?.total ?? 0;
+    const totalUsage = currentFilesSize + payload.length;
+    const limit = 50 * 1024 * 1024; // 50MB
+    if (totalUsage > limit) {
+      return json({ error: 'storage_limit_reached', limit, usage: totalUsage }, 413);
+    }
+  } else {
+    if (payload.length > MAX_BACKUP_BYTES) return json({ error: 'backup_too_large' }, 413);
+  }
+
+  let itemCount = 0;
+  if (Array.isArray(body.items)) {
+    itemCount = body.items.length;
+  } else if (body.items && typeof body.items === 'object') {
+    const obj = body.items as Record<string, unknown>;
+    const itemsCount = Array.isArray(obj.items) ? obj.items.length : 0;
+    const storageCount = Array.isArray(obj.storageItems) ? obj.storageItems.length : 0;
+    itemCount = itemsCount + storageCount;
+  }
 
   await env.DB.prepare(
     `INSERT INTO backups (user_id, payload, item_count, device, updated_at)
@@ -288,12 +330,12 @@ async function handleBackupPut(request: Request, env: Env, account: Account): Pr
     .bind(
       account.userId,
       payload,
-      body.items.length,
+      itemCount,
       typeof body.device === 'string' ? body.device.slice(0, 64) : null,
     )
     .run();
 
-  return json({ ok: true, itemCount: body.items.length });
+  return json({ ok: true, itemCount });
 }
 
 async function handleBackupGet(env: Env, account: Account): Promise<Response> {
@@ -381,6 +423,105 @@ async function handleScanAccept(env: Env, account: Account): Promise<Response> {
   return json({ ok: true, charged: true });
 }
 
+async function handleStorageUpload(request: Request, env: Env, account: Account): Promise<Response> {
+  if (!account.userId.startsWith('plenum:')) {
+    return json({ error: 'unsupported_user_type' }, 400);
+  }
+
+  let body: { name?: unknown; mimeType?: unknown; content?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'invalid_json' }, 400);
+  }
+
+  const name = typeof body.name === 'string' ? body.name : 'upload';
+  const mimeType = typeof body.mimeType === 'string' ? body.mimeType : 'application/octet-stream';
+  const content = typeof body.content === 'string' ? body.content : '';
+
+  if (!content) return json({ error: 'missing_content' }, 400);
+
+  let bytes: Uint8Array;
+  try {
+    const binaryString = atob(content);
+    const len = binaryString.length;
+    bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+  } catch {
+    return json({ error: 'invalid_base64' }, 400);
+  }
+
+  const fileSize = bytes.length;
+
+  // Enforce 50MB total storage limit (backup payload + user_files size)
+  const filesSizeRow = await env.DB.prepare(
+    `SELECT COALESCE(SUM(size), 0) as total FROM user_files WHERE user_id = ?`
+  )
+    .bind(account.userId)
+    .first<{ total: number }>();
+  const currentFilesSize = filesSizeRow?.total ?? 0;
+
+  const backupRow = await env.DB.prepare(
+    `SELECT LENGTH(payload) as len FROM backups WHERE user_id = ?`
+  )
+    .bind(account.userId)
+    .first<{ len: number }>();
+  const backupSize = backupRow?.len ?? 0;
+
+  const totalUsage = currentFilesSize + backupSize + fileSize;
+  const limit = 50 * 1024 * 1024; // 50MB
+  if (totalUsage > limit) {
+    return json({ error: 'storage_limit_reached', limit, usage: totalUsage }, 413);
+  }
+
+  const fileId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO user_files (id, user_id, name, mime_type, content, size)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  )
+    .bind(fileId, account.userId, name, mimeType, bytes, fileSize)
+    .run();
+
+  const url = new URL(request.url);
+  return json({
+    id: fileId,
+    name,
+    mimeType,
+    size: fileSize,
+    url: `${url.origin}/storage/file/${fileId}`
+  });
+}
+
+async function handleStorageFileGet(request: Request, env: Env, account: Account, fileId: string): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT name, mime_type as mimeType, content, size FROM user_files WHERE id = ? AND user_id = ?`
+  )
+    .bind(fileId, account.userId)
+    .first<{ name: string; mimeType: string; content: ArrayBuffer; size: number }>();
+
+  if (!row) return json({ error: 'file_not_found' }, 404);
+
+  return new Response(row.content, {
+    headers: {
+      'Content-Type': row.mimeType,
+      'Content-Disposition': `inline; filename="${encodeURIComponent(row.name)}"`,
+      'Content-Length': String(row.size)
+    }
+  });
+}
+
+async function handleStorageFileDelete(env: Env, account: Account, fileId: string): Promise<Response> {
+  await env.DB.prepare(
+    `DELETE FROM user_files WHERE id = ? AND user_id = ?`
+  )
+    .bind(fileId, account.userId)
+    .run();
+
+  return json({ ok: true });
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
@@ -427,6 +568,21 @@ export default {
 
       if (url.pathname === '/backup' && request.method === 'GET') {
         return await handleBackupGet(env, account);
+      }
+
+      if (url.pathname === '/storage/upload' && request.method === 'POST') {
+        return await handleStorageUpload(request, env, account);
+      }
+
+      const fileMatch = url.pathname.match(/^\/storage\/file\/([a-f0-9-]+)$/);
+      if (fileMatch) {
+        const fileId = fileMatch[1];
+        if (request.method === 'GET') {
+          return await handleStorageFileGet(request, env, account, fileId);
+        }
+        if (request.method === 'DELETE') {
+          return await handleStorageFileDelete(env, account, fileId);
+        }
       }
 
       return json({ error: 'not_found' }, 404);

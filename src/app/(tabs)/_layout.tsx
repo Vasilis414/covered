@@ -75,6 +75,15 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="storage"
+        options={{
+          title: 'Storage Room',
+          tabBarIcon: ({ color, size, focused }) => (
+            <TabIcon name="archive" size={size} color={color} focused={focused} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
