@@ -17,6 +17,7 @@ import { mimeTypeFor } from '@/lib/attachments';
 import { backupToDrive, restoreFromDrive, DRIVE_SCOPE } from '@/lib/drive-backup';
 import { useAuth } from '@/store/auth';
 import { useItems } from '@/store/items';
+import { useSettings } from '@/store/settings';
 import { useStorage, type StorageItem } from '@/store/storage';
 import type { WarrantyItem } from '@/types/item';
 
@@ -66,7 +67,8 @@ async function uploadFileToServer(token: string, localUri: string): Promise<stri
 export function BackupProvider({ children }: { children: ReactNode }) {
   const { items, ready: itemsReady, mergeItems } = useItems();
   const { storageItems, ready: storageReady, mergeStorageItems } = useStorage();
-  const { entitlement, getAccessToken, getIdToken, signedIn, authProvider } = useAuth();
+  const { entitlement, getAccessToken, getIdToken, signedIn, authProvider, refresh } = useAuth();
+  const { googleBackupDestination } = useSettings();
 
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'error'>('idle');
@@ -80,6 +82,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
 
   const ready = itemsReady && storageReady;
   const premium = Boolean(entitlement?.paid);
+  const useCloud = authProvider === 'plenum' || (authProvider === 'google' && googleBackupDestination === 'cloud');
 
   useEffect(() => {
     AsyncStorage.getItem(STATE_KEY)
@@ -108,7 +111,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       // Nothing changed since the last upload, so don't spend the round trip.
       if (reason === 'auto' && payload === lastPayload.current) return;
 
-      const token = authProvider === 'plenum' ? getIdToken() : await getAccessToken();
+      const token = useCloud ? getIdToken() : await getAccessToken();
       if (!token) {
         if (reason === 'manual') {
           setStatus('error');
@@ -120,7 +123,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       running.current = true;
       setStatus('running');
       try {
-        if (authProvider === 'plenum') {
+        if (useCloud) {
           const failed: string[] = [];
           let uploaded = 0;
           const updatedPhotoMap = { ...photoMap.current };
@@ -181,6 +184,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
           lastPayload.current = payload;
           const nowStr = new Date().toISOString();
           await persist(nowStr);
+          await refresh().catch(() => {});
 
           const summary =
             `Backed up ${backupResult.itemCount} item${backupResult.itemCount === 1 ? '' : 's'}` +
@@ -228,7 +232,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         running.current = false;
       }
     },
-    [premium, items, storageItems, authProvider, getIdToken, getAccessToken, persist],
+    [premium, items, storageItems, authProvider, useCloud, getIdToken, getAccessToken, persist, refresh],
   );
 
   // Auto-backup: debounce so a burst of edits produces one upload.
@@ -249,6 +253,52 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     return () => subscription.remove();
   }, [run]);
 
+  const downloadPhotos = useCallback(async <T extends { photoUris: string[]; id: string }>(list: T[], token: string): Promise<T[]> => {
+    const result: T[] = [];
+    for (const item of list) {
+      const photoUris: string[] = [];
+      for (const uri of item.photoUris) {
+        if (uri.startsWith('file://')) {
+          photoUris.push(uri);
+          continue;
+        }
+        try {
+          const fileId = uri.split('/').pop() || '';
+          const fileResponse = await fetch(uri, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (!fileResponse.ok) throw new Error('File download failed');
+          const blob = await fileResponse.blob();
+          const base64 = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const res = reader.result as string;
+              resolve(res.split(',')[1]);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+
+          const contentType = fileResponse.headers.get('Content-Type') || '';
+          let extension = 'jpg';
+          if (contentType.includes('png')) extension = 'png';
+          else if (contentType.includes('pdf')) extension = 'pdf';
+          else if (contentType.includes('webp')) extension = 'webp';
+
+          const target = new File(Paths.document, 'photos', `${fileId}.${extension}`);
+          await target.parentDirectory.create({ intermediates: true, idempotent: true });
+          await target.write(base64, { encoding: 'base64' });
+          photoUris.push(target.uri);
+        } catch (err) {
+          console.warn('Failed to download photo:', uri, err);
+          photoUris.push(uri);
+        }
+      }
+      result.push({ ...item, photoUris });
+    }
+    return result;
+  }, []);
+
   const pulled = useRef(false);
 
   /**
@@ -262,13 +312,13 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     pulled.current = true;
 
     void (async () => {
-      const token = authProvider === 'plenum' ? getIdToken() : await getAccessToken();
+      const token = useCloud ? getIdToken() : await getAccessToken();
       if (!token) return;
       try {
         let remoteWarranty: WarrantyItem[] = [];
         let remoteStorage: StorageItem[] = [];
 
-        if (authProvider === 'plenum') {
+        if (useCloud) {
           const response = await fetch(`${API_BASE}/backup`, {
             headers: { Authorization: `Bearer ${token}` }
           });
@@ -288,8 +338,8 @@ export function BackupProvider({ children }: { children: ReactNode }) {
             rawStorage = Array.isArray(obj.storageItems) ? obj.storageItems : [];
           }
 
-          remoteWarranty = rawWarranty;
-          remoteStorage = rawStorage;
+          remoteWarranty = await downloadPhotos(rawWarranty, token);
+          remoteStorage = await downloadPhotos(rawStorage, token);
         } else {
           const remote = await restoreFromDrive(token);
           if (!remote) return;
@@ -307,12 +357,12 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         // A failed pull shouldn't block using the app.
       }
     })();
-  }, [ready, signedIn, premium, authProvider, getIdToken, getAccessToken, mergeItems, mergeStorageItems]);
+  }, [ready, signedIn, premium, authProvider, useCloud, getIdToken, getAccessToken, mergeItems, mergeStorageItems, downloadPhotos]);
 
   const backupNow = useCallback(() => run('manual'), [run]);
 
   const restoreNow = useCallback(async () => {
-    const token = authProvider === 'plenum' ? getIdToken() : await getAccessToken();
+    const token = useCloud ? getIdToken() : await getAccessToken();
     if (!token) {
       setStatus('error');
       setMessage('Could not reach your backup — sign out and back in, then try again.');
@@ -323,7 +373,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       let restoredWarranty: WarrantyItem[] = [];
       let restoredStorage: StorageItem[] = [];
 
-      if (authProvider === 'plenum') {
+      if (useCloud) {
         const response = await fetch(`${API_BASE}/backup`, {
           headers: { Authorization: `Bearer ${token}` }
         });
@@ -347,48 +397,8 @@ export function BackupProvider({ children }: { children: ReactNode }) {
           rawStorage = Array.isArray(obj.storageItems) ? obj.storageItems : [];
         }
 
-        const downloadPhotos = async <T extends { photoUris: string[]; id: string }>(list: T[]): Promise<T[]> => {
-          const result: T[] = [];
-          for (const item of list) {
-            const photoUris: string[] = [];
-            for (const uri of item.photoUris) {
-              if (uri.startsWith('file://')) {
-                photoUris.push(uri);
-                continue;
-              }
-              try {
-                const fileId = uri.split('/').pop() || '';
-                const fileResponse = await fetch(uri, {
-                  headers: { Authorization: `Bearer ${token}` }
-                });
-                if (!fileResponse.ok) throw new Error('File download failed');
-                const blob = await fileResponse.blob();
-                const base64 = await new Promise<string>((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onloadend = () => {
-                    const res = reader.result as string;
-                    resolve(res.split(',')[1]);
-                  };
-                  reader.onerror = reject;
-                  reader.readAsDataURL(blob);
-                });
-
-                const extension = uri.split('.').pop()?.toLowerCase() ?? 'jpg';
-                const target = new File(Paths.document, 'photos', `${fileId}.${extension}`);
-                await target.parentDirectory.create({ intermediates: true, idempotent: true });
-                await target.write(base64, { encoding: 'base64' });
-                photoUris.push(target.uri);
-              } catch {
-                photoUris.push(uri);
-              }
-            }
-            result.push({ ...item, photoUris });
-          }
-          return result;
-        };
-
-        restoredWarranty = await downloadPhotos(rawWarranty);
-        restoredStorage = await downloadPhotos(rawStorage);
+        restoredWarranty = await downloadPhotos(rawWarranty, token);
+        restoredStorage = await downloadPhotos(rawStorage, token);
       } else {
         const restored = await restoreFromDrive(token);
         if (!restored) {
@@ -423,7 +433,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       }
       return null;
     }
-  }, [authProvider, getIdToken, getAccessToken, mergeItems, mergeStorageItems]);
+  }, [authProvider, useCloud, getIdToken, getAccessToken, mergeItems, mergeStorageItems, downloadPhotos]);
 
   const value = useMemo(
     () => ({ lastBackupAt, status, message, backupNow, restoreNow }),

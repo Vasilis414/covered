@@ -22,6 +22,8 @@ export type Entitlement = {
   scansUsed: number;
   /** null when unlimited (paid). */
   scansRemaining: number | null;
+  storageUsed?: number;
+  storageLimit?: number;
 };
 
 export type ScanOutcome =

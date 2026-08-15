@@ -15,12 +15,14 @@ type Settings = {
   reminderOffsets: number[];
   appearance: Appearance;
   accent: AccentName;
+  googleBackupDestination: 'drive' | 'cloud';
 };
 
 const DEFAULTS: Settings = {
   reminderOffsets: DEFAULT_OFFSETS,
   appearance: 'system',
   accent: 'blue',
+  googleBackupDestination: 'drive',
 };
 
 type SettingsContextValue = Settings & {
@@ -28,6 +30,7 @@ type SettingsContextValue = Settings & {
   toggleOffset: (offset: number) => Promise<number[]>;
   setAppearance: (appearance: Appearance) => void;
   setAccent: (accent: AccentName) => void;
+  setGoogleBackupDestination: (destination: 'drive' | 'cloud') => void;
   /** Whether a Gemini key is stored on this device. The key itself never leaves the keychain. */
   aiKeySet: boolean;
   saveAiKey: (key: string) => Promise<void>;
@@ -106,6 +109,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [persist, settings],
   );
 
+  const setGoogleBackupDestination = useCallback(
+    (googleBackupDestination: 'drive' | 'cloud') => {
+      persist({ ...settings, googleBackupDestination });
+    },
+    [persist, settings],
+  );
+
   const value = useMemo(
     () => ({
       ...settings,
@@ -113,11 +123,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       toggleOffset,
       setAppearance,
       setAccent,
+      setGoogleBackupDestination,
       aiKeySet,
       saveAiKey,
       forgetAiKey,
     }),
-    [settings, ready, toggleOffset, setAppearance, setAccent, aiKeySet, saveAiKey, forgetAiKey],
+    [settings, ready, toggleOffset, setAppearance, setAccent, setGoogleBackupDestination, aiKeySet, saveAiKey, forgetAiKey],
   );
 
   return <SettingsContext value={value}>{children}</SettingsContext>;

@@ -1,4 +1,5 @@
 import { verifyGoogleIdToken, type GoogleIdentity } from './google-auth';
+import { getGcsAccessToken, uploadToGcs, downloadFromGcs, deleteFromGcs } from './gcs';
 
 /**
  * Covered's scan proxy.
@@ -291,8 +292,8 @@ async function handleBackupPut(request: Request, env: Env, account: Account): Pr
 
   const payload = JSON.stringify(body.items);
 
-  if (account.userId.startsWith('plenum:')) {
-    // Enforce 50MB total storage limit for Plenum SSO users (JSON payload + user uploaded files)
+  if (account.userId.startsWith('plenum:') || isPaid(account)) {
+    // Enforce 500MB total storage limit for server-backed users (JSON payload + user uploaded files)
     const filesSizeRow = await env.DB.prepare(
       `SELECT COALESCE(SUM(size), 0) as total FROM user_files WHERE user_id = ?`
     )
@@ -300,7 +301,7 @@ async function handleBackupPut(request: Request, env: Env, account: Account): Pr
       .first<{ total: number }>();
     const currentFilesSize = filesSizeRow?.total ?? 0;
     const totalUsage = currentFilesSize + payload.length;
-    const limit = 50 * 1024 * 1024; // 50MB
+    const limit = 500 * 1024 * 1024; // 500MB
     if (totalUsage > limit) {
       return json({ error: 'storage_limit_reached', limit, usage: totalUsage }, 413);
     }
@@ -424,8 +425,8 @@ async function handleScanAccept(env: Env, account: Account): Promise<Response> {
 }
 
 async function handleStorageUpload(request: Request, env: Env, account: Account): Promise<Response> {
-  if (!account.userId.startsWith('plenum:')) {
-    return json({ error: 'unsupported_user_type' }, 400);
+  if (!isPaid(account)) {
+    return json({ error: 'subscription_required' }, 402);
   }
 
   let body: { name?: unknown; mimeType?: unknown; content?: unknown };
@@ -455,7 +456,7 @@ async function handleStorageUpload(request: Request, env: Env, account: Account)
 
   const fileSize = bytes.length;
 
-  // Enforce 50MB total storage limit (backup payload + user_files size)
+  // Enforce 500MB total storage limit (backup payload + user_files size)
   const filesSizeRow = await env.DB.prepare(
     `SELECT COALESCE(SUM(size), 0) as total FROM user_files WHERE user_id = ?`
   )
@@ -471,17 +472,24 @@ async function handleStorageUpload(request: Request, env: Env, account: Account)
   const backupSize = backupRow?.len ?? 0;
 
   const totalUsage = currentFilesSize + backupSize + fileSize;
-  const limit = 50 * 1024 * 1024; // 50MB
+  const limit = 500 * 1024 * 1024; // 500MB
   if (totalUsage > limit) {
     return json({ error: 'storage_limit_reached', limit, usage: totalUsage }, 413);
   }
 
   const fileId = crypto.randomUUID();
+  const gcsPath = `users/${account.userId}/${fileId}`;
+
+  // Upload binary to GCS
+  const gcsToken = await getGcsAccessToken(env.GCS_SERVICE_ACCOUNT_KEY);
+  await uploadToGcs(env.GCS_BUCKET_NAME, gcsPath, bytes, mimeType, gcsToken);
+
+  // Store metadata only in D1 (no BLOB)
   await env.DB.prepare(
-    `INSERT INTO user_files (id, user_id, name, mime_type, content, size)
+    `INSERT INTO user_files (id, user_id, name, mime_type, size, gcs_path)
      VALUES (?, ?, ?, ?, ?, ?)`
   )
-    .bind(fileId, account.userId, name, mimeType, bytes, fileSize)
+    .bind(fileId, account.userId, name, mimeType, fileSize, gcsPath)
     .run();
 
   const url = new URL(request.url);
@@ -496,14 +504,37 @@ async function handleStorageUpload(request: Request, env: Env, account: Account)
 
 async function handleStorageFileGet(request: Request, env: Env, account: Account, fileId: string): Promise<Response> {
   const row = await env.DB.prepare(
-    `SELECT name, mime_type as mimeType, content, size FROM user_files WHERE id = ? AND user_id = ?`
+    `SELECT name, mime_type as mimeType, size, gcs_path as gcsPath FROM user_files WHERE id = ? AND user_id = ?`
   )
     .bind(fileId, account.userId)
-    .first<{ name: string; mimeType: string; content: ArrayBuffer; size: number }>();
+    .first<{ name: string; mimeType: string; size: number; gcsPath: string | null }>();
 
   if (!row) return json({ error: 'file_not_found' }, 404);
 
-  return new Response(row.content, {
+  // If the file has a GCS path, stream from GCS. Otherwise fall back to D1
+  // for any legacy rows that still have content stored inline.
+  if (row.gcsPath) {
+    const gcsToken = await getGcsAccessToken(env.GCS_SERVICE_ACCOUNT_KEY);
+    const { data, contentType } = await downloadFromGcs(env.GCS_BUCKET_NAME, row.gcsPath, gcsToken);
+    return new Response(data, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `inline; filename="${encodeURIComponent(row.name)}"`,
+        'Content-Length': String(data.byteLength),
+      }
+    });
+  }
+
+  // Legacy fallback: file stored as D1 BLOB
+  const legacy = await env.DB.prepare(
+    `SELECT content FROM user_files WHERE id = ? AND user_id = ?`
+  )
+    .bind(fileId, account.userId)
+    .first<{ content: ArrayBuffer }>();
+
+  if (!legacy?.content) return json({ error: 'file_not_found' }, 404);
+
+  return new Response(legacy.content, {
     headers: {
       'Content-Type': row.mimeType,
       'Content-Disposition': `inline; filename="${encodeURIComponent(row.name)}"`,
@@ -513,6 +544,18 @@ async function handleStorageFileGet(request: Request, env: Env, account: Account
 }
 
 async function handleStorageFileDelete(env: Env, account: Account, fileId: string): Promise<Response> {
+  // Look up the GCS path before deleting the metadata row.
+  const row = await env.DB.prepare(
+    `SELECT gcs_path as gcsPath FROM user_files WHERE id = ? AND user_id = ?`
+  )
+    .bind(fileId, account.userId)
+    .first<{ gcsPath: string | null }>();
+
+  if (row?.gcsPath) {
+    const gcsToken = await getGcsAccessToken(env.GCS_SERVICE_ACCOUNT_KEY);
+    await deleteFromGcs(env.GCS_BUCKET_NAME, row.gcsPath, gcsToken);
+  }
+
   await env.DB.prepare(
     `DELETE FROM user_files WHERE id = ? AND user_id = ?`
   )
@@ -535,18 +578,37 @@ export default {
       if (url.pathname === '/me' && request.method === 'GET') {
         const freeLimit = Number(env.FREE_SCAN_LIMIT ?? '1');
         const paid = isPaid(account);
+
+        let storageUsed = 0;
+        if (paid) {
+          const filesSizeRow = await env.DB.prepare(
+            `SELECT COALESCE(SUM(size), 0) as total FROM user_files WHERE user_id = ?`
+          )
+            .bind(account.userId)
+            .first<{ total: number }>();
+          
+          const backupRow = await env.DB.prepare(
+            `SELECT LENGTH(payload) as len FROM backups WHERE user_id = ?`
+          )
+            .bind(account.userId)
+            .first<{ len: number }>();
+
+          storageUsed = (filesSizeRow?.total ?? 0) + (backupRow?.len ?? 0);
+        }
+
         return json({
           plan: account.plan,
           paid,
           expiresAt: account.expiresAt,
           scansUsed: account.scansUsed,
-          // Remaining reflects accepted scans, but attempts still cap it.
           scansRemaining: paid
             ? null
             : Math.min(
                 Math.max(0, freeLimit - account.scansCharged),
                 Math.max(0, MAX_FREE_ATTEMPTS - account.scansUsed),
               ),
+          storageUsed,
+          storageLimit: 500 * 1024 * 1024, // 500MB
         });
       }
 

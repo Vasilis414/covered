@@ -17,6 +17,7 @@ import { useAuth } from '@/store/auth';
 import { useItems } from '@/store/items';
 import { useBackup } from '@/store/backup';
 import { redeemCode } from '@/lib/api';
+import { Segmented } from '@/components/ui/segmented';
 import { AVAILABLE_OFFSETS, useSettings } from '@/store/settings';
 import { FREE_ITEM_LIMIT } from '@/lib/limits';
 
@@ -38,10 +39,13 @@ export default function SettingsScreen() {
     toggleOffset,
     setAppearance,
     setAccent,
+    googleBackupDestination,
+    setGoogleBackupDestination,
   } = useSettings();
   const { signedIn, entitlement, signingIn, signIn, signInWithPlenum, signInWithCode, signOut, getIdToken, refresh, authProvider } =
     useAuth();
   const [busy, setBusy] = useState(false);
+  const useCloud = authProvider === 'plenum' || (authProvider === 'google' && googleBackupDestination === 'cloud');
 
 
   // Tapping the version row a few times reveals the code field.
@@ -127,9 +131,13 @@ export default function SettingsScreen() {
         footer={
           signedIn
             ? authProvider === 'plenum'
-              ? 'Subscribed via Plenum SSO — 50MB cloud storage enabled.'
+              ? entitlement?.paid
+                ? 'Subscribed via Plenum SSO — 500MB Covered Cloud storage enabled.'
+                : `Free plan. ${entitlement?.scansRemaining ?? 0} AI scan${(entitlement?.scansRemaining ?? 0) === 1 ? '' : 's'} left, up to ${FREE_ITEM_LIMIT} items.`
               : entitlement?.paid
-                ? 'Subscribed via Google — unlimited Google Drive storage enabled.'
+                ? googleBackupDestination === 'drive'
+                  ? 'Subscribed via Google — unlimited Google Drive storage enabled.'
+                  : 'Subscribed via Google — 500MB Covered Cloud storage enabled.'
                 : `Free plan. ${entitlement?.scansRemaining ?? 0} AI scan${(entitlement?.scansRemaining ?? 0) === 1 ? '' : 's'} left, up to ${FREE_ITEM_LIMIT} items.`
             : 'Sign in to use AI receipt scanning and cloud backups. Your items stay on this device either way.'
         }>
@@ -138,19 +146,36 @@ export default function SettingsScreen() {
             {authProvider === 'plenum' ? (
               <Row
                 title="Signed in with Plenum"
-                subtitle="Premium Tier"
-                icon="cloud"
-                iconColor="success"
-                chevron={false}
-              />
-            ) : (
-              <Row
-                title="Signed in with Google"
                 subtitle={entitlement?.paid ? 'Subscribed' : 'Free plan'}
-                icon="person-circle"
+                icon="cloud"
                 iconColor={entitlement?.paid ? 'success' : 'accent'}
                 chevron={false}
               />
+            ) : (
+              <>
+                <Row
+                  title="Signed in with Google"
+                  subtitle={entitlement?.paid ? 'Subscribed' : 'Free plan'}
+                  icon="person-circle"
+                  iconColor={entitlement?.paid ? 'success' : 'accent'}
+                  chevron={false}
+                />
+                {entitlement?.paid ? (
+                  <View style={styles.destinationToggleSection}>
+                    <ThemedText type="caption" themeColor="textSecondary" style={styles.destinationLabel}>
+                      BACKUP DESTINATION
+                    </ThemedText>
+                    <Segmented
+                      options={[
+                        { value: 'drive', label: 'Google Drive (Unlimited)' },
+                        { value: 'cloud', label: 'Covered Cloud (500MB)' },
+                      ]}
+                      value={googleBackupDestination}
+                      onChange={setGoogleBackupDestination}
+                    />
+                  </View>
+                ) : null}
+              </>
             )}
             <Row title="Sign out" destructive centered chevron={false} onPress={() => signOut()} />
           </>
@@ -205,6 +230,27 @@ export default function SettingsScreen() {
                   : 'Backs up automatically so nothing is lost if you change or lose your phone.')
               : 'Premium keeps your items and receipt photos backed up.'
           }>
+          {useCloud && entitlement?.storageUsed !== undefined && entitlement?.storageLimit !== undefined ? (
+            <View style={styles.storageUsageSection}>
+              <View style={styles.storageUsageTextRow}>
+                <ThemedText style={styles.storageUsageLabel}>Cloud Storage</ThemedText>
+                <ThemedText style={styles.storageUsageValue}>
+                  {formatBytes(entitlement.storageUsed)} / {formatBytes(entitlement.storageLimit)}
+                </ThemedText>
+              </View>
+              <View style={styles.progressBarBackground}>
+                <View 
+                  style={[
+                    styles.progressBarFill, 
+                    { 
+                      width: `${Math.min(100, (entitlement.storageUsed / entitlement.storageLimit) * 100)}%`,
+                      backgroundColor: (entitlement.storageUsed / entitlement.storageLimit) > 0.9 ? theme.danger : theme.accent 
+                    }
+                  ]} 
+                />
+              </View>
+            </View>
+          ) : null}
           <Row
             title="Back up now"
             subtitle={premium ? undefined : 'Premium'}
@@ -360,4 +406,53 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   tabInset: { height: Spacing.six + Spacing.four },
+  destinationToggleSection: {
+    paddingHorizontal: ListMetrics.horizontalInset,
+    paddingBottom: Spacing.three,
+    paddingTop: Spacing.one,
+  },
+  destinationLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: Spacing.two,
+    textTransform: 'uppercase',
+  },
+  storageUsageSection: {
+    paddingHorizontal: ListMetrics.horizontalInset,
+    paddingVertical: Spacing.three,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E0E0E0',
+  },
+  storageUsageTextRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.two,
+  },
+  storageUsageLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  storageUsageValue: {
+    fontSize: 13,
+    color: '#666',
+  },
+  progressBarBackground: {
+    height: 8,
+    backgroundColor: '#EAEAEA',
+    borderRadius: Radius.pill,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: Radius.pill,
+  },
 });
+
+function formatBytes(bytes: number, decimals = 1): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
