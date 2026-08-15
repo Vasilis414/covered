@@ -1,0 +1,24 @@
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  google_sub TEXT NOT NULL UNIQUE,
+  email TEXT,
+  name TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS entitlements (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  plan TEXT NOT NULL DEFAULT 'free',
+  expires_at TEXT,
+  play_token TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS usage (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  ai_scans_used INTEGER NOT NULL DEFAULT 0,
+  last_scan_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);

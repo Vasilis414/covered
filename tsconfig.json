@@ -16,5 +16,12 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "exclude": [
+    "android",
+    "dist",
+    "ios",
+    "node_modules",
+    "worker"
   ]
 }

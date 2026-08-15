@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "covered-scan",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-12",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "covered-accounts",
+      "database_id": "c18f9dcc-736e-41b4-b260-687881a61c13"
+    }
+  ],
+
+  "vars": {
+    // Comma-separated OAuth client IDs accepted as the `aud` claim. Filled in
+    // once the Google Cloud console clients exist — one per platform.
+    "GOOGLE_CLIENT_IDS": "1001340597486-os5hm33nosa7sjih0om5e97uj7hc8uob.apps.googleusercontent.com,1001340597486-ncplfopef1vgrbhjiqvljo8u3ug60ooq.apps.googleusercontent.com,1001340597486-tp514u7qv82a06472643b1il7b8j6biv.apps.googleusercontent.com",
+    "GEMINI_MODEL": "gemini-3.5-flash-lite",
+    // Scans a free account gets, ever. Paid accounts are unlimited.
+    "FREE_SCAN_LIMIT": "1"
+  }
+
+  // GEMINI_API_KEY is a secret: wrangler secret put GEMINI_API_KEY
+}
