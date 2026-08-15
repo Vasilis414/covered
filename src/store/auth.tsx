@@ -202,8 +202,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (result.reason === 'network') return;
 
       // Plenum SSO tokens cannot be silently renewed via Google.
+      // Keep the local session alive and let subsequent API calls prompt re-login on 401.
       if (token.startsWith('plenum:')) {
-        await clearSession();
         return;
       }
 

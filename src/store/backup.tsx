@@ -218,7 +218,12 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         setStatus('error');
-        setMessage(String(error));
+        const errStr = String(error);
+        if (errStr.includes('unauthorized') || errStr.includes('401')) {
+          setMessage('Your session has expired. Please sign out and sign back in to renew your connection.');
+        } else {
+          setMessage(errStr);
+        }
       } finally {
         running.current = false;
       }
@@ -410,7 +415,12 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       return totalAdded;
     } catch (error) {
       setStatus('error');
-      setMessage(String(error));
+      const errStr = String(error);
+      if (errStr.includes('401') || errStr.includes('unauthorized')) {
+        setMessage('Your session has expired. Please sign out and sign back in to renew your connection.');
+      } else {
+        setMessage(errStr);
+      }
       return null;
     }
   }, [authProvider, getIdToken, getAccessToken, mergeItems, mergeStorageItems]);
