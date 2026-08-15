@@ -39,7 +39,7 @@ export default function SettingsScreen() {
     setAppearance,
     setAccent,
   } = useSettings();
-  const { signedIn, entitlement, signingIn, signIn, signInWithCode, signOut, getIdToken, refresh } =
+  const { signedIn, entitlement, signingIn, signIn, signInWithPlenum, signInWithCode, signOut, getIdToken, refresh, authProvider } =
     useAuth();
   const [busy, setBusy] = useState(false);
 
@@ -126,20 +126,32 @@ export default function SettingsScreen() {
         header="Account"
         footer={
           signedIn
-            ? entitlement?.paid
-              ? 'Subscribed — unlimited scans and items.'
-              : `Free plan. ${entitlement?.scansRemaining ?? 0} AI scan${(entitlement?.scansRemaining ?? 0) === 1 ? '' : 's'} left, up to ${FREE_ITEM_LIMIT} items.`
-            : 'Sign in to use AI receipt scanning. Your items stay on this device either way.'
+            ? authProvider === 'plenum'
+              ? 'Subscribed via Plenum SSO — 50MB cloud storage enabled.'
+              : entitlement?.paid
+                ? 'Subscribed via Google — unlimited Google Drive storage enabled.'
+                : `Free plan. ${entitlement?.scansRemaining ?? 0} AI scan${(entitlement?.scansRemaining ?? 0) === 1 ? '' : 's'} left, up to ${FREE_ITEM_LIMIT} items.`
+            : 'Sign in to use AI receipt scanning and cloud backups. Your items stay on this device either way.'
         }>
         {signedIn ? (
           <>
-            <Row
-              title="Signed in with Google"
-              subtitle={entitlement?.paid ? 'Subscribed' : 'Free plan'}
-              icon="person-circle"
-              iconColor={entitlement?.paid ? 'success' : 'accent'}
-              chevron={false}
-            />
+            {authProvider === 'plenum' ? (
+              <Row
+                title="Signed in with Plenum"
+                subtitle="Premium Tier"
+                icon="cloud"
+                iconColor="success"
+                chevron={false}
+              />
+            ) : (
+              <Row
+                title="Signed in with Google"
+                subtitle={entitlement?.paid ? 'Subscribed' : 'Free plan'}
+                icon="person-circle"
+                iconColor={entitlement?.paid ? 'success' : 'accent'}
+                chevron={false}
+              />
+            )}
             <Row title="Sign out" destructive centered chevron={false} onPress={() => signOut()} />
           </>
         ) : (
@@ -149,6 +161,13 @@ export default function SettingsScreen() {
               icon="logo-google"
               chevron={false}
               onPress={() => signIn()}
+              trailing={signingIn ? <ActivityIndicator size="small" /> : undefined}
+            />
+            <Row
+              title={signingIn ? 'Opening Plenum…' : 'Sign in with Plenum SSO'}
+              icon="cloud-outline"
+              chevron={false}
+              onPress={() => signInWithPlenum()}
               trailing={signingIn ? <ActivityIndicator size="small" /> : undefined}
             />
             <Row
