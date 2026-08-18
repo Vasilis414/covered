@@ -1,7 +1,8 @@
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { Image, Pressable, StyleSheet, View, Alert } from 'react-native';
+import { Image } from 'expo-image';
+import { Pressable, StyleSheet, View, Alert } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { UpsellSheet, type UpsellReason } from '@/components/upsell-sheet';
@@ -13,6 +14,7 @@ import { Segmented } from '@/components/ui/segmented';
 import { Motion } from '@/constants/motion';
 import { Radius, Spacing, ListMetrics } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { isPdf } from '@/lib/attachments';
 import { useAuth } from '@/store/auth';
 import { useStorage, type StorageItem } from '@/store/storage';
 
@@ -70,6 +72,7 @@ export default function StorageScreen() {
         <View style={styles.lockedContainer}>
           <EmptyState
             icon="lock-closed-outline"
+            sfSymbol="lock.shield"
             title="Premium Storage Room"
             body="Store miscellaneous items like parking tickets, shopping receipts, and barcode loyalty cards securely in the cloud."
           />
@@ -108,6 +111,7 @@ export default function StorageScreen() {
           {visible.length === 0 ? (
             <EmptyState
               icon="folder-open-outline"
+              sfSymbol="tray"
               title="No items found"
               body={query ? "No items match your search." : "Your storage room is empty. Tap '+' to upload your first card or ticket."}
             />
@@ -118,6 +122,7 @@ export default function StorageScreen() {
                   key={item.id}
                   item={item}
                   index={index}
+                  onPress={() => router.push(`/storage/${item.id}`)}
                   onDelete={() => handleDelete(item.id, item.name)}
                 />
               ))}
@@ -135,10 +140,12 @@ export default function StorageScreen() {
 function StorageItemRow({
   item,
   index,
+  onPress,
   onDelete,
 }: {
   item: StorageItem;
   index: number;
+  onPress: () => void;
   onDelete: () => void;
 }) {
   const theme = useTheme();
@@ -158,6 +165,8 @@ function StorageItemRow({
     other: 'document-text-outline',
   };
 
+  const isExpired = item.expiresAt ? new Date(item.expiresAt).getTime() < Date.now() : false;
+
   return (
     <Animated.View
       entering={FadeInDown.duration(Motion.standard).delay(Math.min(index * 40, 300))}
@@ -169,34 +178,58 @@ function StorageItemRow({
         },
       ]}
     >
-      <View style={[styles.thumbnailContainer, { backgroundColor: theme.fill }]}>
-        {thumbnail ? (
-          <Image source={{ uri: thumbnail }} style={styles.thumbnail} />
-        ) : (
-          <Ionicons name={typeIcons[item.type]} size={22} color={theme.textSecondary} />
-        )}
-      </View>
-
-      <View style={styles.content}>
-        <ThemedText type="body" style={styles.name} numberOfLines={1}>
-          {item.name}
-        </ThemedText>
-        <View style={styles.meta}>
-          <ThemedText type="caption" themeColor="textSecondary">
-            {typeLabels[item.type]}
-          </ThemedText>
-          {item.notes ? (
-            <>
-              <ThemedText type="caption" themeColor="textTertiary">
-                {' • '}
-              </ThemedText>
-              <ThemedText type="caption" themeColor="textSecondary" numberOfLines={1} style={styles.notes}>
-                {item.notes}
-              </ThemedText>
-            </>
-          ) : null}
+      <Pressable onPress={onPress} style={styles.rowMainPressable}>
+        <View style={[styles.thumbnailContainer, { backgroundColor: theme.fill }]}>
+          {thumbnail && !isPdf(thumbnail) ? (
+            <Image
+              source={{ uri: thumbnail }}
+              style={styles.thumbnail}
+              contentFit="cover"
+              recyclingKey={thumbnail}
+            />
+          ) : (
+            <Ionicons
+              name={thumbnail ? 'document-text' : typeIcons[item.type]}
+              size={22}
+              color={theme.textSecondary}
+            />
+          )}
         </View>
-      </View>
+
+        <View style={styles.content}>
+          <View style={styles.titleRow}>
+            <ThemedText type="body" style={styles.name} numberOfLines={1}>
+              {item.name}
+            </ThemedText>
+            {item.barcodePayload ? (
+              <View style={[styles.badge, { backgroundColor: theme.fill }]}>
+                <Ionicons name="barcode-outline" size={12} color={theme.accent} />
+              </View>
+            ) : null}
+            {item.expiresAt ? (
+              <View style={[styles.badge, { backgroundColor: isExpired ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.15)' }]}>
+                <Ionicons name="time-outline" size={12} color={isExpired ? theme.danger : '#D97706'} />
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.meta}>
+            <ThemedText type="caption" themeColor="textSecondary">
+              {typeLabels[item.type]}
+            </ThemedText>
+            {item.notes ? (
+              <>
+                <ThemedText type="caption" themeColor="textTertiary">
+                  {' • '}
+                </ThemedText>
+                <ThemedText type="caption" themeColor="textSecondary" numberOfLines={1} style={styles.notes}>
+                  {item.notes}
+                </ThemedText>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Pressable>
 
       <Pressable onPress={onDelete} style={styles.deleteButton}>
         <Ionicons name="trash-outline" size={18} color={theme.danger} />
@@ -243,12 +276,18 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: Spacing.three,
+    paddingVertical: Spacing.two,
     paddingHorizontal: ListMetrics.horizontalInset,
   },
+  rowMainPressable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.one,
+  },
   thumbnailContainer: {
-    width: 40,
-    height: 40,
+    width: 44,
+    height: 44,
     borderRadius: Radius.sm,
     overflow: 'hidden',
     alignItems: 'center',
@@ -258,14 +297,26 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: '100%',
     height: '100%',
-    resizeMode: 'cover',
   },
   content: {
     flex: 1,
     justifyContent: 'center',
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.one,
+  },
+  badge: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   name: {
     fontWeight: '500',
+    flexShrink: 1,
   },
   meta: {
     flexDirection: 'row',

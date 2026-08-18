@@ -419,9 +419,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Access tokens are short-lived; the native SDK refreshes them, so always ask
   // rather than caching one.
+  /**
+   * The Google OAuth access token, used for Drive.
+   *
+   * getTokens() throws when the native SDK has no current user, which is the
+   * state after a reinstall: our own ID token survives in the Keychain, so the
+   * app looks signed in, while Google's SDK session is empty. Returning null
+   * there meant Drive backup quietly never ran and every photo stayed local.
+   * A silent sign-in restores the SDK's session without any UI.
+   */
   const getAccessToken = useCallback(async () => {
     if (!google) return null;
+
     try {
+      const tokens = await google.getTokens();
+      if (tokens?.accessToken) return tokens.accessToken;
+    } catch {
+      // Fall through and try to restore the session.
+    }
+
+    try {
+      await google.signInSilently();
       const tokens = await google.getTokens();
       return tokens?.accessToken ?? null;
     } catch {

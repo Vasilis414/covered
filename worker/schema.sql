@@ -35,11 +35,13 @@ CREATE TABLE IF NOT EXISTS user_files (
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   mime_type TEXT NOT NULL,
-  content BLOB NOT NULL,
   size INTEGER NOT NULL,
+  gcs_path TEXT,
+  hash TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub);
 CREATE INDEX IF NOT EXISTS idx_user_files_user_id ON user_files(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_files_user_hash ON user_files(user_id, hash);
 

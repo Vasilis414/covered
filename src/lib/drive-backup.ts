@@ -36,7 +36,7 @@ type BackedUpStorageItem = Omit<StorageItem, 'photoUris'> & {
 };
 
 export type BackupManifest = {
-  version: 2;
+  version: 3;
   updatedAt: string;
   items: BackedUpItem[];
   storageItems: BackedUpStorageItem[];
@@ -114,15 +114,24 @@ async function uploadMultipart(
   token: string,
   name: string,
   mimeType: string,
-  base64: string,
+  payload: string,
   existingId?: string | null,
+  isBase64 = true,
 ): Promise<string> {
   const metadata = { name, parents: existingId ? undefined : ['appDataFolder'] };
   const boundary = 'covered_multipart_boundary';
 
+  /**
+   * Content-Transfer-Encoding is sent only for payloads that really are base64.
+   * It used to be unconditional, which meant the manifest — plain JSON — was
+   * announced as base64 too. Drive tried to decode it, failed, and answered
+   * 400 on the last step of every single backup.
+   */
+  const encodingHeader = isBase64 ? 'Content-Transfer-Encoding: base64\r\n' : '';
+
   const body =
-    `\r\n--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-    `--${boundary}\r\nContent-Type: ${mimeType}\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64}\r\n` +
+    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\nContent-Type: ${mimeType}\r\n${encodingHeader}\r\n${payload}\r\n` +
     `--${boundary}--`;
 
   const url = existingId
@@ -151,8 +160,9 @@ async function uploadResumable(
   token: string,
   name: string,
   mimeType: string,
-  base64: string,
+  payload: string,
   existingId?: string | null,
+  isBase64 = true,
 ): Promise<string> {
   const metadata = { name, parents: existingId ? undefined : ['appDataFolder'] };
   const sessionUrl = existingId
@@ -174,9 +184,9 @@ async function uploadResumable(
     method: 'PUT',
     headers: {
       'Content-Type': mimeType,
-      'Content-Transfer-Encoding': 'base64',
+      ...(isBase64 ? { 'Content-Transfer-Encoding': 'base64' } : {}),
     },
-    body: base64,
+    body: payload,
   });
 
   if (!response.ok) throw await driveError(response, 'Resumable chunk failed');
@@ -188,18 +198,25 @@ async function uploadFile(
   token: string,
   name: string,
   mimeType: string,
-  base64: string,
+  payload: string,
   existingId?: string | null,
+  isBase64 = true,
 ): Promise<string> {
-  return base64.length > MULTIPART_LIMIT
-    ? uploadResumable(token, name, mimeType, base64, existingId)
-    : uploadMultipart(token, name, mimeType, base64, existingId);
+  return payload.length > MULTIPART_LIMIT
+    ? uploadResumable(token, name, mimeType, payload, existingId, isBase64)
+    : uploadMultipart(token, name, mimeType, payload, existingId, isBase64);
 }
 
 async function downloadText(token: string, fileId: string): Promise<string> {
   const response = await driveFetch(token, `${DRIVE_FILES}/${fileId}?alt=media`);
   if (!response.ok) throw await driveError(response, 'Drive download failed');
   return response.text();
+}
+
+async function downloadBytes(token: string, fileId: string): Promise<Uint8Array> {
+  const response = await driveFetch(token, `${DRIVE_FILES}/${fileId}?alt=media`);
+  if (!response.ok) throw await driveError(response, 'Drive download failed');
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 function photoBackupName(uri: string): string {
@@ -258,14 +275,14 @@ export async function backupToDrive(
   });
 
   const manifest: BackupManifest = {
-    version: 2,
+    version: 3,
     updatedAt: new Date().toISOString(),
     items: backedUpItems,
     storageItems: backedUpStorageItems,
   };
 
   const existing = await findManifestId(token);
-  await uploadFile(token, MANIFEST_NAME, 'application/json', JSON.stringify(manifest), existing);
+  await uploadFile(token, MANIFEST_NAME, 'application/json', JSON.stringify(manifest), existing, false);
 
   return {
     result: {
@@ -293,6 +310,9 @@ export async function restoreFromDrive(
 
   if (!Array.isArray(manifest.items)) return null;
 
+  /** From version 3, Drive holds decoded bytes rather than base64 text. */
+  const storesRawBytes = (manifest.version ?? 1) >= 3;
+
   const restoredItems: WarrantyItem[] = [];
   const restoredStorageItems: StorageItem[] = [];
 
@@ -310,11 +330,22 @@ export async function restoreFromDrive(
 
       for (const entry of entries) {
         try {
-          const base64 = await downloadText(token, entry.id);
           const extension = entry.name.split('.').pop()?.toLowerCase() ?? 'jpg';
           const target = new File(Paths.document, 'photos', `${entry.id}.${extension}`);
           await target.parentDirectory.create({ intermediates: true, idempotent: true });
-          await target.write(base64, { encoding: 'base64' });
+
+          /**
+           * Version 3 onwards stores real bytes, because uploads now declare
+           * Content-Transfer-Encoding and Drive decodes them. Earlier backups
+           * hold base64 as text, so they still have to be decoded on the way
+           * back in — reading one the wrong way produces a corrupt file rather
+           * than an error, so the manifest version decides.
+           */
+          if (storesRawBytes) {
+            await target.write(await downloadBytes(token, entry.id));
+          } else {
+            await target.write(await downloadText(token, entry.id), { encoding: 'base64' });
+          }
           photoUris.push(target.uri);
         } catch {
           // Skip a file that won't come back rather than losing the item.
@@ -331,7 +362,7 @@ export async function restoreFromDrive(
   });
   restoredItems.push(...finalItems);
 
-  if (manifest.version === 2 && Array.isArray(manifest.storageItems)) {
+  if ((manifest.version ?? 1) >= 2 && Array.isArray(manifest.storageItems)) {
     const finalStorage = await restoreList<BackedUpStorageItem, StorageItem>(manifest.storageItems, (item, photoUris) => {
       const { attachments, ...rest } = item;
       return { ...rest, photoUris } as StorageItem;

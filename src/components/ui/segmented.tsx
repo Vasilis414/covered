@@ -1,3 +1,4 @@
+import { SegmentedControl } from '@expo/ui/community/segmented-control';
 import * as Haptics from 'expo-haptics';
 import { useState } from 'react';
 import { Platform, Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
@@ -10,7 +11,7 @@ import Animated, {
 import { ThemedText } from '@/components/themed-text';
 import { Spring } from '@/constants/motion';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 
 const TRACK_PADDING = 2;
 const SEGMENT_GAP = 2;
@@ -21,7 +22,54 @@ const SEGMENT_GAP = 2;
  * a background that blinks from one segment to the next — that travel is what
  * tells you the two segments are the same control.
  */
-export function Segmented<T extends string>({
+export function Segmented<T extends string>(props: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  /**
+   * iOS has the real control, so use it: it tracks the system's segment
+   * metrics, Dynamic Type and the iOS 26 materials for free. Android and web
+   * keep the hand-built track below, which is why that code stays.
+   */
+  if (Platform.OS === 'ios') return <NativeSegmented {...props} />;
+  return <FallbackSegmented {...props} />;
+}
+
+function NativeSegmented<T extends string>({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const theme = useTheme();
+  const scheme = useResolvedScheme();
+  const index = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+
+  return (
+    <SegmentedControl
+      values={options.map((option) => option.label)}
+      selectedIndex={index}
+      appearance={scheme}
+      tintColor={String(theme.card)}
+      style={styles.native}
+      onChange={(event) => {
+        const next = options[event.nativeEvent.selectedSegmentIndex];
+        if (!next || next.value === value) return;
+        Haptics.selectionAsync();
+        onChange(next.value);
+      }}
+    />
+  );
+}
+
+function FallbackSegmented<T extends string>({
   options,
   value,
   onChange,
@@ -159,4 +207,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm - 1,
   },
   label: { fontSize: 13 },
+  native: {
+    marginHorizontal: ListMetrics.horizontalInset,
+    marginBottom: Spacing.four,
+  },
 });

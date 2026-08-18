@@ -1,5 +1,6 @@
 import { Image } from 'expo-image';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
@@ -7,9 +8,11 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 
 import { CategoryIcon } from '@/components/category-icon';
+import { PdfViewer } from '@/components/pdf-viewer';
 import { PhotoViewer } from '@/components/photo-viewer';
 import { ThemedText } from '@/components/themed-text';
 import { Row, Section } from '@/components/ui/list';
+import { BackButton, BarTextButton, ScreenBar } from '@/components/ui/screen-bar';
 import { ProgressTrack } from '@/components/ui/progress-track';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -35,6 +38,7 @@ export default function ItemDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { getItem, removeItem } = useItems();
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [pdfUri, setPdfUri] = useState<string | null>(null);
   const item = getItem(id);
 
   if (!item) {
@@ -91,26 +95,29 @@ export default function ItemDetailScreen() {
   }
 
   return (
+    /**
+     * The app draws this header itself rather than using the native stack one.
+     * The native header centres its title and lets it expand: a long item name
+     * grew over the back button and swallowed taps on it, which is why going
+     * back worked for some items and not others. An ordinary Pressable in a row
+     * cannot be covered by anything.
+     */
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top']}>
+      {/* No separate chrome colour: the bar sits on the screen background, the
+          same way the storage detail header does. */}
+      <ScreenBar
+        title={item.name}
+        left={<BackButton onPress={() => router.back()} />}
+        right={
+          <BarTextButton label="Edit" onPress={() => router.push(`/add?id=${item.id}`)} />
+        }
+      />
+
+
     <ScrollView
       style={{ backgroundColor: theme.background }}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}>
-      <Stack.Screen
-        options={{
-          title: item.name,
-          headerRight: () => (
-            <Pressable
-              onPress={() => router.push(`/add?id=${item.id}`)}
-              accessibilityRole="button"
-              accessibilityLabel="Edit item"
-              hitSlop={12}>
-              <ThemedText type="body" style={{ color: theme.accent }}>
-                Edit
-              </ThemedText>
-            </Pressable>
-          ),
-        }}
-      />
 
       <View style={styles.hero}>
         <CategoryIcon category={item.category} status={status} size={64} />
@@ -137,7 +144,7 @@ export default function ItemDetailScreen() {
           {item.photoUris.map((uri, index) => (
             <Pressable
               key={uri}
-              onPress={() => (isPdf(uri) ? void openAttachment(uri) : setViewerIndex(index))}
+              onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
               accessibilityRole="imagebutton"
               accessibilityLabel={isPdf(uri) ? 'Open PDF' : 'Open photo full screen'}
               style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>
@@ -155,6 +162,8 @@ export default function ItemDetailScreen() {
           ))}
         </ScrollView>
       ) : null}
+
+      <PdfViewer uri={pdfUri} visible={pdfUri !== null} onClose={() => setPdfUri(null)} />
 
       <PhotoViewer
         uris={item.photoUris.filter((uri) => !isPdf(uri))}
@@ -202,10 +211,12 @@ export default function ItemDetailScreen() {
         <Row title="Delete item" destructive centered onPress={confirmDelete} chevron={false} />
       </Section>
     </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: { flex: 1 },
   missing: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: Spacing.one },
   content: { paddingTop: Spacing.four, paddingBottom: Spacing.six },
   hero: {

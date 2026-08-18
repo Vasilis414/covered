@@ -1,5 +1,6 @@
+import * as Haptics from 'expo-haptics';
 import { type ReactNode } from 'react';
-import { Pressable, type PressableProps, type ViewStyle } from 'react-native';
+import { Platform, Pressable, type PressableProps, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useReducedMotion,
@@ -25,7 +26,7 @@ export function PressableScale({
   ...rest
 }: PressableProps & {
   children: ReactNode;
-  style?: ViewStyle | ViewStyle[];
+  style?: StyleProp<ViewStyle>;
   /** How far it dips. Larger controls need less travel to read as pressed. */
   scaleTo?: number;
 }) {
@@ -40,6 +41,9 @@ export function PressableScale({
     <AnimatedPressable
       onPressIn={() => {
         scale.value = scaleTo;
+        if (Platform.OS === 'ios' && !reduceMotion) {
+          void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
       }}
       onPressOut={() => {
         scale.value = 1;

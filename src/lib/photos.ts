@@ -28,3 +28,33 @@ export function deletePhoto(uri: string): void {
     // Orphaned files are harmless; never block a delete on cleanup.
   }
 }
+
+/**
+ * Rewrites a stored attachment path onto the current app container.
+ *
+ * iOS hands the app a NEW container id on every reinstall, so the absolute
+ * path written by a previous install — .../Application/<old-uuid>/Documents/
+ * photos/x.jpg — can never resolve again. The file itself survives an upgrade
+ * install; only the prefix moves. Keeping the tail after /Documents/ and
+ * rejoining it to today's directory makes an old reference valid again.
+ *
+ * Anything that is not a local Documents path (remote URLs, ph:// assets) is
+ * returned untouched.
+ */
+export function resolvePhotoUri(uri: string): string {
+  if (!uri || !uri.startsWith('file://')) return uri;
+
+  const marker = '/Documents/';
+  const index = uri.indexOf(marker);
+  if (index === -1) return uri;
+
+  const relative = uri.slice(index + marker.length);
+  const base = Paths.document.uri.endsWith('/') ? Paths.document.uri : `${Paths.document.uri}/`;
+  const rebuilt = `${base}${relative}`;
+  return rebuilt === uri ? uri : rebuilt;
+}
+
+/** Convenience for the arrays every item carries. */
+export function resolvePhotoUris(uris: string[] | undefined): string[] {
+  return (uris ?? []).map(resolvePhotoUri);
+}

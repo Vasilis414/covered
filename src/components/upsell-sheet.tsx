@@ -4,7 +4,8 @@ import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { SlideInDown, useReducedMotion } from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
-import { PressableScale } from '@/components/ui/pressable-scale';
+import { SheetBackdrop } from '@/components/ui/sheet-backdrop';
+import { GlassButton } from '@/components/ui/glass-button';
 import { Motion } from '@/constants/motion';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -90,10 +91,11 @@ export function UpsellSheet({
        Sliding the whole modal dragged the dim layer up from the bottom edge
        with it, which read as one grey panel rather than a sheet over the app. */
     <Modal visible={reason !== null} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} />
-      <Animated.View
-        entering={reduceMotion ? undefined : SlideInDown.duration(Motion.standard)}
-        style={[styles.sheet, { backgroundColor: theme.card }]}>
+      <View style={styles.root}>
+        <SheetBackdrop onPress={onClose} />
+        <Animated.View
+          entering={reduceMotion ? undefined : SlideInDown.duration(Motion.standard)}
+          style={[styles.sheet, { backgroundColor: theme.card }]}>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <View style={[styles.badge, { backgroundColor: theme.accentSoft }]}>
             <Ionicons name="shield-checkmark" size={26} color={theme.accent} />
@@ -121,29 +123,18 @@ export function UpsellSheet({
 
           {signedIn ? (
             <>
-              <PressableScale
-                accessibilityRole="button"
-                style={[styles.primary, { backgroundColor: theme.accent }]}
-                onPress={onClose}>
-                <ThemedText type="headline" style={styles.primaryLabel}>
-                  Subscribe
-                </ThemedText>
-              </PressableScale>
+              <GlassButton label="Subscribe" onPress={onClose} />
               <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
                 Subscriptions aren&apos;t open yet — have a code? Settings, then tap Version.
               </ThemedText>
             </>
           ) : (
             <>
-              <PressableScale
-                accessibilityRole="button"
+              <GlassButton
+                label={signingIn ? 'Opening Google…' : 'Sign in with Google'}
                 disabled={signingIn}
-                style={[styles.primary, { backgroundColor: theme.accent }]}
-                onPress={() => signIn()}>
-                <ThemedText type="headline" style={styles.primaryLabel}>
-                  {signingIn ? 'Opening Google…' : 'Sign in with Google'}
-                </ThemedText>
-              </PressableScale>
+                onPress={() => signIn()}
+              />
               <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
                 Premium is a separate upgrade — unlimited scanning, unlimited items and backup.
               </ThemedText>
@@ -155,18 +146,31 @@ export function UpsellSheet({
               {promptingSignIn ? 'Maybe later' : 'Not now'}
             </ThemedText>
           </Pressable>
-        </ScrollView>
-      </Animated.View>
+          </ScrollView>
+        </Animated.View>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  /**
+   * A dedicated container pins the sheet, rather than a flex:1 backdrop
+   * pushing it down.
+   *
+   * The old arrangement relied on the backdrop being a flex sibling. A
+   * reanimated `entering` animation takes the sheet out of normal flow while
+   * it runs, which left it at the top of the screen with its height measured
+   * against the wrong box. justifyContent does the anchoring here, so the
+   * animation cannot move it, and overflow:hidden keeps the content inside
+   * the card instead of painting over the app behind it.
+   */
+  root: { flex: 1, justifyContent: 'flex-end' },
   sheet: {
     borderTopLeftRadius: Radius.lg,
     borderTopRightRadius: Radius.lg,
     maxHeight: '80%',
+    overflow: 'hidden',
   },
   content: {
     alignItems: 'center',
@@ -192,13 +196,5 @@ const styles = StyleSheet.create({
   },
   benefit: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two + 2 },
   benefitText: { flex: 1 },
-  primary: {
-    alignSelf: 'stretch',
-    height: 50,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  primaryLabel: { color: '#FFFFFF' },
   dismiss: { paddingVertical: Spacing.two },
 });

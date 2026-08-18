@@ -45,3 +45,11 @@ example
 # local secrets
 .env
 .env.local
+
+# build output
+build/
+hermes-engine/
+.last_build_configuration
+
+# cloudflare tail logs
+worker/tail.jsonl

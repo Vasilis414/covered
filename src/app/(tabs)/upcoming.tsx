@@ -49,6 +49,7 @@ export default function UpcomingScreen() {
       {pending.length === 0 ? (
         <EmptyState
           icon="checkmark-circle-outline"
+          sfSymbol="checkmark.circle"
           title="Nothing due"
           body="No active warranties are counting down. Add an item and it'll show up here."
         />

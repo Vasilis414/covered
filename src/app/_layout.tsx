@@ -1,10 +1,11 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
+import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
+import { ShareIntentSheet } from '@/components/share-intent-sheet';
 import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 import { AuthProvider } from '@/store/auth';
 import { BackupProvider } from '@/store/backup';
@@ -36,10 +37,25 @@ function RootNavigator() {
           contentStyle: { backgroundColor: theme.background },
         }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="add" options={{ presentation: 'modal', headerShown: false }} />
-        <Stack.Screen name="storage-add" options={{ presentation: 'modal', headerShown: false }} />
-        <Stack.Screen name="item/[id]" options={{ title: '', headerBackTitle: 'Back' }} />
+        {/* These two set headerShown themselves: iOS uses the native modal bar,
+            Android keeps the in-flow ScreenBar. */}
+        <Stack.Screen name="add" options={{ presentation: 'modal', headerShown: Platform.OS === 'ios' }} />
+        <Stack.Screen
+          name="storage-add"
+          options={{ presentation: 'modal', headerShown: Platform.OS === 'ios' }}
+        />
+        {/* Draws its own back bar, like storage/[id] — see the note there. */}
+        <Stack.Screen name="item/[id]" options={{ headerShown: false }} />
+        {/*
+          storage/[id] draws its own back bar, the same way the modals do.
+          Unregistered, the Stack fell back to defaults and stacked a second
+          header above it titled with the raw route name.
+        */}
+        <Stack.Screen name="storage/[id]" options={{ headerShown: false }} />
       </Stack>
+      {/* Sits above the Stack: a shared file can arrive on any screen. */}
+      <ShareIntentSheet />
+
       {/* Follows the in-app theme, not the OS, so an override looks right. */}
       <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
     </ThemeProvider>

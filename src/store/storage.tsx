@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createContext, use, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { deletePhoto } from '@/lib/photos';
+import { deletePhoto, resolvePhotoUris } from '@/lib/photos';
+import { cancelStorageReminders, scheduleStorageReminders } from '@/lib/storage-notifications';
 
 export type StorageItem = {
   id: string;
@@ -9,6 +10,10 @@ export type StorageItem = {
   type: 'ticket' | 'receipt' | 'barcode' | 'other';
   photoUris: string[];
   notes?: string;
+  barcodePayload?: string;
+  barcodeFormat?: 'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER';
+  expiresAt?: string;
+  notificationIds?: string[];
   createdAt: string;
 };
 
@@ -20,6 +25,8 @@ type StorageContextValue = {
   addStorageItem: (draft: NewStorageItem) => Promise<StorageItem>;
   updateStorageItem: (id: string, patch: Partial<NewStorageItem>) => Promise<void>;
   removeStorageItem: (id: string) => Promise<void>;
+  /** Wipes every stored item and its files from this device. */
+  clearAllStorage: () => Promise<void>;
   getStorageItem: (id: string) => StorageItem | undefined;
   replaceAllStorage: (next: StorageItem[]) => Promise<void>;
   mergeStorageItems: (incoming: StorageItem[]) => Promise<number>;
@@ -43,7 +50,15 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       if (!active) return;
       try {
         const parsed = raw ? JSON.parse(raw) : [];
-        setStorageItems(Array.isArray(parsed) ? parsed : []);
+        // Same rebasing as the warranty library — see resolvePhotoUris.
+        setStorageItems(
+          Array.isArray(parsed)
+            ? (parsed as StorageItem[]).map((item) => ({
+                ...item,
+                photoUris: resolvePhotoUris(item.photoUris),
+              }))
+            : [],
+        );
       } catch {
         setStorageItems([]);
       }
@@ -61,9 +76,11 @@ export function StorageProvider({ children }: { children: ReactNode }) {
 
   const addStorageItem = useCallback(
     async (draft: NewStorageItem) => {
+      const notificationIds = await scheduleStorageReminders(draft);
       const item: StorageItem = {
         ...draft,
         id: createId(),
+        notificationIds,
         createdAt: new Date().toISOString(),
       };
       await commit([item, ...storageItems]);
@@ -76,17 +93,33 @@ export function StorageProvider({ children }: { children: ReactNode }) {
     async (id: string, patch: Partial<NewStorageItem>) => {
       const current = storageItems.find((item) => item.id === id);
       if (!current) return;
-      const merged: StorageItem = { ...current, ...patch };
+      if (current.notificationIds) {
+        await cancelStorageReminders(current.notificationIds);
+      }
+      const notificationIds = await scheduleStorageReminders({ ...current, ...patch });
+      const merged: StorageItem = { ...current, ...patch, notificationIds };
       await commit(storageItems.map((item) => (item.id === id ? merged : item)));
     },
     [commit, storageItems],
   );
+
+  /** See the note on clearAll in the items store — same contract. */
+  const clearAllStorage = useCallback(async () => {
+    for (const item of storageItems) {
+      await cancelStorageReminders(item.notificationIds);
+      item.photoUris.forEach(deletePhoto);
+    }
+    await commit([]);
+  }, [storageItems, commit]);
 
   const removeStorageItem = useCallback(
     async (id: string) => {
       const target = storageItems.find((item) => item.id === id);
       if (target) {
         target.photoUris.forEach(deletePhoto);
+        if (target.notificationIds) {
+          await cancelStorageReminders(target.notificationIds);
+        }
       }
       await commit(storageItems.filter((item) => item.id !== id));
     },
@@ -120,11 +153,12 @@ export function StorageProvider({ children }: { children: ReactNode }) {
       addStorageItem,
       updateStorageItem,
       removeStorageItem,
+      clearAllStorage,
       getStorageItem,
       replaceAllStorage,
       mergeStorageItems,
     }),
-    [storageItems, ready, addStorageItem, updateStorageItem, removeStorageItem, getStorageItem, replaceAllStorage, mergeStorageItems],
+    [storageItems, ready, addStorageItem, updateStorageItem, removeStorageItem, clearAllStorage, getStorageItem, replaceAllStorage, mergeStorageItems],
   );
 
   return <StorageContext value={value}>{children}</StorageContext>;

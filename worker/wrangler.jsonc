@@ -22,9 +22,13 @@
     // Comma-separated OAuth client IDs accepted as the `aud` claim. Filled in
     // once the Google Cloud console clients exist — one per platform.
     "GOOGLE_CLIENT_IDS": "1001340597486-os5hm33nosa7sjih0om5e97uj7hc8uob.apps.googleusercontent.com,1001340597486-ncplfopef1vgrbhjiqvljo8u3ug60ooq.apps.googleusercontent.com,1001340597486-tp514u7qv82a06472643b1il7b8j6biv.apps.googleusercontent.com",
+    // gemini-2.5-flash was retired by Google and returns not_found for every
+    // request. Keep this on a current model — the 3.x family is only reachable
+    // through the Interactions API, which queryGemini already falls back to.
     "GEMINI_MODEL": "gemini-3.5-flash-lite",
     // Scans a free account gets, ever. Paid accounts are unlimited.
-    "FREE_SCAN_LIMIT": "1"
+    "FREE_SCAN_LIMIT": "1",
+    "GCS_BUCKET_NAME": "covered_databucket"
   }
 
   // GEMINI_API_KEY is a secret: wrangler secret put GEMINI_API_KEY

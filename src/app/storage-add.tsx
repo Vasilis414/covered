@@ -1,8 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
+import BarcodeScanning, { BarcodeFormat } from '@react-native-ml-kit/barcode-scanning';
 import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,16 +19,22 @@ import {
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { PhotoGridPicker } from '@/components/photo-grid-picker';
+import { DigitalCode } from '@/components/digital-code';
+import { PdfViewer } from '@/components/pdf-viewer';
 import { PhotoViewer } from '@/components/photo-viewer';
 import { ThemedText } from '@/components/themed-text';
+import { BarTextButton, ScreenBar } from '@/components/ui/screen-bar';
+import { NativeHeaderText } from '@/components/ui/native-header-action';
 import { InputRow } from '@/components/ui/input-row';
-import { Row, Section } from '@/components/ui/list';
+import { Section } from '@/components/ui/list';
 import { Segmented } from '@/components/ui/segmented';
 import { Motion } from '@/constants/motion';
 import { Radius, Spacing, ListMetrics } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { isPdf } from '@/lib/attachments';
+import { scanStorageViaApi } from '@/lib/api';
 import { persistPhoto, deletePhoto } from '@/lib/photos';
+import { useAuth } from '@/store/auth';
 import { useStorage } from '@/store/storage';
 
 if (Platform.OS === 'android') {
@@ -46,33 +54,110 @@ export default function StorageAddScreen() {
   const theme = useTheme();
   const router = useRouter();
   const { addStorageItem } = useStorage();
+  const { getIdToken } = useAuth();
 
   const [name, setName] = useState('');
   const [type, setType] = useState<ItemType>('ticket');
   const [notes, setNotes] = useState('');
+  const [barcodePayload, setBarcodePayload] = useState('');
+  const [barcodeFormat, setBarcodeFormat] = useState<'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER'>('CODE_128');
+  const [expiresAt, setExpiresAt] = useState('');
+  const { shared } = useLocalSearchParams<{ shared?: string }>();
   const [photoUris, setPhotoUris] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [pdfUri, setPdfUri] = useState<string | null>(null);
 
-  const canSave = name.trim().length > 0 && !saving;
+  const canSave = name.trim().length > 0 && !saving && !analyzing;
+
+  async function analyzePhotoWithAi(uri: string) {
+    setAnalyzing(true);
+    let detectedBarcode = '';
+    let detectedFormat: 'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER' = 'CODE_128';
+
+    // 1. High-accuracy On-device MLKit Barcode & QR Decoder (Instant & 100% Offline)
+    try {
+      const barcodes = await BarcodeScanning.scan(uri);
+      if (barcodes && barcodes.length > 0) {
+        const first = barcodes[0];
+        detectedBarcode = first.value || '';
+        if (first.format === BarcodeFormat.QR_CODE) detectedFormat = 'QR_CODE';
+        else if (first.format === BarcodeFormat.CODE_128) detectedFormat = 'CODE_128';
+        else if (first.format === BarcodeFormat.EAN_13) detectedFormat = 'EAN_13';
+        else if (first.format === BarcodeFormat.CODE_39) detectedFormat = 'CODE_39';
+        else if (first.format === BarcodeFormat.PDF417) detectedFormat = 'PDF417';
+        else detectedFormat = 'OTHER';
+
+        if (detectedBarcode) {
+          setBarcodePayload(detectedBarcode);
+          setBarcodeFormat(detectedFormat);
+        }
+      }
+    } catch (barcodeErr) {
+      console.log('On-device barcode scan info:', barcodeErr);
+    }
+
+    // 2. Gemini Cloud AI for Ticket Title, Expiry & Document Metadata
+    try {
+      const token = await getIdToken();
+      if (token) {
+        const outcome = await scanStorageViaApi(token, uri);
+        if (outcome.ok && outcome.scan) {
+          const { scan } = outcome;
+          if (scan.name) setName(scan.name);
+          if (scan.type) setType(scan.type);
+          if (!detectedBarcode && scan.barcodePayload) {
+            setBarcodePayload(scan.barcodePayload);
+            if (scan.barcodeFormat) setBarcodeFormat(scan.barcodeFormat);
+          }
+          if (scan.expiresAt) setExpiresAt(scan.expiresAt);
+          if (scan.notes) {
+            setNotes((current) => (current ? `${current}\n${scan.notes}` : scan.notes || ''));
+          }
+
+          if (Platform.OS !== 'web') {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('AI Storage scan failed:', err);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  /**
+   * Same contract as the warranty add screen: a shared file is attached once.
+   * acceptPhoto runs the on-device barcode decode and a cloud scan, so a repeat
+   * would cost a request and duplicate the attachment.
+   */
+  const sharedHandled = useRef(false);
+  useEffect(() => {
+    if (!shared || sharedHandled.current) return;
+    sharedHandled.current = true;
+    acceptPhoto(shared);
+  }, [shared]);
 
   function acceptPhoto(uri: string) {
     const stored = persistPhoto(uri);
     setPhotoUris((current) => [...current, stored]);
+    // Automatically analyze with MLKit + AI
+    void analyzePhotoWithAi(stored);
   }
 
   async function takePhoto() {
     try {
       const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission needed', 'Covered needs camera access to photograph attachments.');
+        Alert.alert('Permission needed', 'Covered needs camera access to photograph tickets & cards.');
         return;
       }
 
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        quality: 0.6,
+        quality: 0.85,
         presentationStyle: ImagePicker.UIImagePickerPresentationStyle.FULL_SCREEN,
       });
 
@@ -88,11 +173,25 @@ export default function StorageAddScreen() {
     }
   }
 
-  function handleAttach() {
-    if (Platform.OS === 'ios') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  async function handleAttach() {
+    try {
+      if (Platform.OS === 'ios') {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: true,
+        quality: 0.85,
+        selectionLimit: 10,
+      });
+
+      if (result.canceled || !result.assets?.length) return;
+      for (const asset of result.assets) {
+        acceptPhoto(asset.uri);
+      }
+    } catch (err) {
+      Alert.alert('Could not open photos', String(err));
     }
-    setLibraryOpen(true);
   }
 
   function handleRemovePhoto(index: number) {
@@ -114,6 +213,9 @@ export default function StorageAddScreen() {
         type,
         photoUris,
         notes: notes.trim() || undefined,
+        barcodePayload: barcodePayload.trim() || undefined,
+        barcodeFormat: barcodePayload.trim() ? barcodeFormat : undefined,
+        expiresAt: expiresAt.trim() || undefined,
       });
       router.back();
     } catch (error) {
@@ -127,44 +229,65 @@ export default function StorageAddScreen() {
     router.back();
   }
 
+  const native = Platform.OS === 'ios';
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['bottom']}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
-        <View style={[styles.header, { borderBottomColor: theme.separator }]}>
-          <Pressable onPress={handleCancel} style={styles.headerButton}>
-            <ThemedText style={{ color: theme.accent, fontSize: 16 }}>Cancel</ThemedText>
-          </Pressable>
-          <ThemedText type="headline" style={styles.headerTitle}>
-            Add Stored Item
-          </ThemedText>
-          <Pressable onPress={handleSave} disabled={!canSave} style={styles.headerButton}>
-            {saving ? (
-              <ActivityIndicator size="small" color={theme.accent} />
-            ) : (
-              <ThemedText
-                style={{
-                  color: canSave ? theme.accent : theme.textTertiary,
-                  fontWeight: '600',
-                  fontSize: 16,
-                }}
-              >
-                Save
-              </ThemedText>
-            )}
-          </Pressable>
-        </View>
+        {native ? (
+          <Stack.Screen
+            options={{
+              headerShown: true,
+              title: 'Add Stored Item',
+              headerLeft: () => <NativeHeaderText label="Cancel" onPress={handleCancel} />,
+              headerRight: () =>
+                saving ? (
+                  <ActivityIndicator size="small" color={theme.accent} />
+                ) : (
+                  <NativeHeaderText
+                    label="Save"
+                    prominent
+                    disabled={!canSave}
+                    onPress={handleSave}
+                  />
+                ),
+            }}
+          />
+        ) : (
+          <ScreenBar
+            title="Add Stored Item"
+            left={<BarTextButton label="Cancel" onPress={handleCancel} />}
+            right={
+              saving ? (
+                <ActivityIndicator size="small" color={theme.accent} />
+              ) : (
+                <BarTextButton label="Save" prominent disabled={!canSave} onPress={handleSave} />
+              )
+            }
+          />
+        )}
 
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          {/* AI Analyzing banner */}
+          {analyzing ? (
+            <Animated.View entering={FadeInDown.duration(Motion.standard)} style={[styles.aiBanner, { backgroundColor: theme.fill, borderColor: theme.accent }]}>
+              <ActivityIndicator size="small" color={theme.accent} />
+              <ThemedText style={[styles.aiBannerText, { color: theme.accent }]}>
+                AI is scanning ticket, barcode & expiry date…
+              </ThemedText>
+            </Animated.View>
+          ) : null}
+
           <Section header="Item details">
             <InputRow
               label="Name"
               placeholder="e.g. Airport Parking ticket"
               value={name}
               onChangeText={setName}
-              autoFocus
+              autoFocus={photoUris.length === 0}
             />
           </Section>
 
@@ -173,10 +296,37 @@ export default function StorageAddScreen() {
           </ThemedText>
           <Segmented options={TYPES} value={type} onChange={setType} />
 
-          <Section header="Notes & photos">
+          {/* Barcode & Expiry Section */}
+          <Section header="Barcode & Expiry Reminders">
+            <InputRow
+              label="Barcode/QR"
+              placeholder="Auto-detected code or paste text"
+              value={barcodePayload}
+              onChangeText={setBarcodePayload}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <InputRow
+              label="Expires At"
+              placeholder="YYYY-MM-DD or YYYY-MM-DDTHH:MM"
+              value={expiresAt}
+              onChangeText={setExpiresAt}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </Section>
+
+          {/* Digital Code Preview */}
+          {barcodePayload.trim().length > 0 ? (
+            <View style={styles.codePreviewWrapper}>
+              <DigitalCode payload={barcodePayload} format={barcodeFormat} label={name || 'Barcode'} />
+            </View>
+          ) : null}
+
+          <Section header="Notes & details">
             <InputRow
               label="Notes"
-              placeholder="Optional notes or details"
+              placeholder="Zone, seat, or parking space info"
               value={notes}
               onChangeText={setNotes}
               multiline
@@ -184,8 +334,10 @@ export default function StorageAddScreen() {
           </Section>
 
           <View style={styles.photoContainer}>
+            <PdfViewer uri={pdfUri} visible={pdfUri !== null} onClose={() => setPdfUri(null)} />
+
             <PhotoViewer
-              uris={photoUris}
+              uris={photoUris.filter((uri) => !isPdf(uri))}
               initialIndex={viewerIndex ?? 0}
               visible={viewerIndex !== null}
               onClose={() => setViewerIndex(null)}
@@ -193,7 +345,7 @@ export default function StorageAddScreen() {
 
             <View style={styles.photoLabelRow}>
               <ThemedText type="caption" themeColor="textSecondary">
-                Photos ({photoUris.length})
+                Photos & Tickets ({photoUris.length})
               </ThemedText>
             </View>
 
@@ -211,7 +363,7 @@ export default function StorageAddScreen() {
               >
                 <Ionicons name="camera-outline" size={22} color={theme.accent} />
                 <ThemedText type="footnote" style={{ color: theme.accent, fontWeight: '500' }}>
-                  Camera
+                  Camera & AI Scan
                 </ThemedText>
               </Pressable>
 
@@ -234,40 +386,67 @@ export default function StorageAddScreen() {
             </View>
 
             {photoUris.length > 0 ? (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.thumbnailList}
-              >
-                {photoUris.map((uri, index) => (
-                  <Pressable
-                    key={uri}
-                    onPress={() => setViewerIndex(index)}
-                    style={styles.thumbnailWrapper}
-                  >
-                    <Animated.Image
-                      entering={FadeInDown.duration(Motion.standard)}
-                      source={{ uri }}
-                      style={styles.thumbnail}
-                    />
+              <View style={styles.thumbnailActionSection}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.thumbnailList}
+                >
+                  {photoUris.map((uri, index) => (
                     <Pressable
-                      onPress={() => handleRemovePhoto(index)}
-                      style={[styles.thumbnailDelete, { backgroundColor: theme.danger }]}
+                      key={uri}
+                      onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
+                      style={styles.thumbnailWrapper}
                     >
-                      <Ionicons name="close" size={12} color="#fff" />
+                      <Animated.View entering={FadeInDown.duration(Motion.standard)}>
+                        {isPdf(uri) ? (
+                          <View style={[styles.thumbnail, styles.pdfThumbnail, { backgroundColor: theme.fill }]}>
+                            <Ionicons name="document-text" size={26} color={theme.accent} />
+                          </View>
+                        ) : (
+                          <Image
+                            source={{ uri }}
+                            style={styles.thumbnail}
+                            contentFit="cover"
+                            recyclingKey={uri}
+                          />
+                        )}
+                      </Animated.View>
+                      <Pressable
+                        onPress={() => handleRemovePhoto(index)}
+                        style={[styles.thumbnailDelete, { backgroundColor: theme.danger }]}
+                      >
+                        <Ionicons name="close" size={12} color="#fff" />
+                      </Pressable>
                     </Pressable>
-                  </Pressable>
-                ))}
-              </ScrollView>
+                  ))}
+                </ScrollView>
+
+                <Pressable
+                  onPress={() => analyzePhotoWithAi(photoUris[0])}
+                  disabled={analyzing}
+                  style={({ pressed }) => [
+                    styles.rescanButton,
+                    {
+                      backgroundColor: theme.fill,
+                      borderColor: theme.accent,
+                      opacity: pressed || analyzing ? 0.7 : 1,
+                    },
+                  ]}
+                >
+                  {analyzing ? (
+                    <ActivityIndicator size="small" color={theme.accent} />
+                  ) : (
+                    <Ionicons name="sparkles" size={16} color={theme.accent} />
+                  )}
+                  <ThemedText style={[styles.rescanText, { color: theme.accent }]}>
+                    {analyzing ? 'AI Scanning…' : 'Re-scan with AI'}
+                  </ThemedText>
+                </Pressable>
+              </View>
             ) : null}
           </View>
         </ScrollView>
-
-        <PhotoGridPicker
-          visible={libraryOpen}
-          onClose={() => setLibraryOpen(false)}
-          onSelect={acceptPhoto}
-        />
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -280,24 +459,27 @@ const styles = StyleSheet.create({
   keyboardView: {
     flex: 1,
   },
-  header: {
-    height: 52,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.four,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  headerButton: {
-    minWidth: 60,
-    justifyContent: 'center',
-    paddingVertical: Spacing.two,
-  },
-  headerTitle: {
-    fontWeight: '600',
-  },
   scrollContent: {
     paddingVertical: Spacing.three,
+    paddingBottom: Spacing.six * 2,
+  },
+  aiBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    marginHorizontal: ListMetrics.horizontalInset,
+    marginBottom: Spacing.three,
+    padding: Spacing.three,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  aiBannerText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  codePreviewWrapper: {
+    marginHorizontal: ListMetrics.horizontalInset,
+    marginBottom: Spacing.two,
   },
   segmentedHeader: {
     marginHorizontal: ListMetrics.horizontalInset,
@@ -346,6 +528,10 @@ const styles = StyleSheet.create({
     height: '100%',
     resizeMode: 'cover',
   },
+  pdfThumbnail: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   thumbnailDelete: {
     position: 'absolute',
     top: 4,
@@ -356,5 +542,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
+  },
+  thumbnailActionSection: {
+    gap: Spacing.two,
+  },
+  rescanButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.two,
+    paddingVertical: Spacing.two + 2,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    marginTop: Spacing.one,
+  },
+  rescanText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

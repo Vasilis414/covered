@@ -24,3 +24,27 @@ export function displayName(uri: string): string {
   // Stored files are prefixed with a timestamp to keep them unique.
   return raw.replace(/^\d+-[a-z0-9]{6}\./i, 'Document.');
 }
+
+/**
+ * The reverse of mimeTypeFor, for files that arrive over the network.
+ *
+ * A synced attachment is fetched from /storage/file/<uuid>, a URL that carries
+ * no extension at all. iOS decides what a file *is* from its extension, so a
+ * cached copy has to be given one before it can be shared or opened.
+ */
+export function extensionForMime(mimeType: string): string {
+  const type = mimeType.split(';')[0].trim().toLowerCase();
+  switch (type) {
+    case 'application/pdf':
+      return 'pdf';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/heic':
+    case 'image/heif':
+      return 'heic';
+    default:
+      return 'jpg';
+  }
+}

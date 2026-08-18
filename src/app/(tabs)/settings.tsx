@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Switch, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { ShareFlowTester } from '@/components/share-flow-tester';
 import { UpsellSheet, type UpsellReason } from '@/components/upsell-sheet';
 import { InputRow } from '@/components/ui/input-row';
 import { LargeTitleScreen } from '@/components/ui/large-title-screen';
@@ -15,8 +16,9 @@ import { isAiAvailable } from '@/lib/ai-receipt';
 import { formatPrice, statusOf } from '@/lib/warranty';
 import { useAuth } from '@/store/auth';
 import { useItems } from '@/store/items';
+import { useStorage } from '@/store/storage';
 import { useBackup } from '@/store/backup';
-import { redeemCode } from '@/lib/api';
+import { deleteAccount, redeemCode } from '@/lib/api';
 import { Segmented } from '@/components/ui/segmented';
 import { AVAILABLE_OFFSETS, useSettings } from '@/store/settings';
 import { FREE_ITEM_LIMIT } from '@/lib/limits';
@@ -30,7 +32,8 @@ const APPEARANCES: { value: Appearance; label: string; icon: keyof typeof Ionico
 export default function SettingsScreen() {
   const theme = useTheme();
   const scheme = useResolvedScheme();
-  const { items, rescheduleAll } = useItems();
+  const { items, rescheduleAll, clearAll } = useItems();
+  const { clearAllStorage } = useStorage();
   const { lastBackupAt, status: backupStatus, message: backupNote, backupNow, restoreNow } = useBackup();
   const {
     reminderOffsets,
@@ -42,7 +45,7 @@ export default function SettingsScreen() {
     googleBackupDestination,
     setGoogleBackupDestination,
   } = useSettings();
-  const { signedIn, entitlement, signingIn, signIn, signInWithPlenum, signInWithCode, signOut, getIdToken, refresh, authProvider } =
+  const { signedIn, entitlement, signingIn, signIn, signInWithPlenum, signOut, getIdToken, refresh, authProvider } =
     useAuth();
   const [busy, setBusy] = useState(false);
   const useCloud = authProvider === 'plenum' || (authProvider === 'google' && googleBackupDestination === 'cloud');
@@ -52,21 +55,6 @@ export default function SettingsScreen() {
   const [upsell, setUpsell] = useState<UpsellReason>(null);
   const [versionTaps, setVersionTaps] = useState(0);
   const [codeDraft, setCodeDraft] = useState('');
-  const [accessDraft, setAccessDraft] = useState('');
-  const [showAccess, setShowAccess] = useState(false);
-
-  async function submitAccessCode() {
-    const code = accessDraft.trim();
-    if (!code) return;
-    const ok = await signInWithCode(code);
-    if (ok) {
-      setAccessDraft('');
-      setShowAccess(false);
-      tap();
-    } else {
-      Alert.alert('That code did not work', 'Check it and try again.');
-    }
-  }
 
   const premium = Boolean(entitlement?.paid);
 
@@ -100,6 +88,78 @@ export default function SettingsScreen() {
     } else {
       Alert.alert('Could not reach the server', 'Try again in a moment.');
     }
+  }
+
+  /**
+   * Account deletion, as both app stores require it: reachable from inside the
+   * app, and a real erasure rather than a flag. The server drops the account,
+   * its backup and its uploaded files; this device then wipes its own copy, so
+   * "delete" does not leave the library sitting on the phone.
+   */
+  function confirmDeleteAccount() {
+    Alert.alert(
+      'Delete your account?',
+      'This permanently removes your account, your cloud backup and every file you have uploaded, then erases the items on this phone. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete everything',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              const token = getIdToken();
+              if (!token) {
+                Alert.alert('Not signed in', 'Sign in first so the account can be removed from the server.');
+                return;
+              }
+              setBusy(true);
+              try {
+                const outcome = await deleteAccount(token);
+                if (outcome !== 'ok') {
+                  Alert.alert(
+                    'Could not delete the account',
+                    'Nothing was removed. Check your connection and try again.',
+                  );
+                  return;
+                }
+                await clearAll();
+                await clearAllStorage();
+                await signOut();
+                Alert.alert('Account deleted', 'Your account and data have been removed.');
+              } finally {
+                setBusy(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
+  }
+
+  /** Local-only erase, for someone who wants the data gone but keeps the account. */
+  function confirmEraseDevice() {
+    Alert.alert(
+      'Erase data on this phone?',
+      'Removes every item, photo and document stored on this device. Anything already backed up stays in your backup and can be restored.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Erase',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              setBusy(true);
+              try {
+                await clearAll();
+                await clearAllStorage();
+              } finally {
+                setBusy(false);
+              }
+            })();
+          },
+        },
+      ],
+    );
   }
 
   const stats = useMemo(() => {
@@ -195,27 +255,6 @@ export default function SettingsScreen() {
               onPress={() => signInWithPlenum()}
               trailing={signingIn ? <ActivityIndicator size="small" /> : undefined}
             />
-            <Row
-              title="Use an access code"
-              subtitle="For devices where Google Sign-In isn't available"
-              icon="key"
-              iconColor="textSecondary"
-              chevron={false}
-              onPress={() => setShowAccess((open) => !open)}
-            />
-            {showAccess ? (
-              <InputRow
-                label="Code"
-                value={accessDraft}
-                onChangeText={setAccessDraft}
-                placeholder="Enter access code"
-                autoCapitalize="none"
-                autoCorrect={false}
-                secureTextEntry
-                returnKeyType="done"
-                onSubmitEditing={submitAccessCode}
-              />
-            ) : null}
           </>
         )}
       </Section>
@@ -349,6 +388,12 @@ export default function SettingsScreen() {
         />
       </Section>
 
+      {/* Temporary: exercises the share flow before the OS share extension can
+          be signed. See ShareFlowTester. */}
+      <Section header="Developer" footer="The real share sheet needs a paid Apple account; this tests the rest of the flow now.">
+        <ShareFlowTester />
+      </Section>
+
       <Section
         header="About"
         footer={
@@ -377,6 +422,26 @@ export default function SettingsScreen() {
           />
         ) : null}
         <Row title="Made by" icon="cloud" iconColor="accent" value="Plenum" />
+      </Section>
+
+      <Section
+        header="Your data"
+        footer="Deleting your account removes it from our servers along with your backup and uploaded files. This cannot be undone.">
+        <Row
+          title="Erase data on this phone"
+          subtitle="Keeps your account and backup"
+          icon="trash-bin"
+          iconColor="warning"
+          chevron={false}
+          onPress={busy ? undefined : confirmEraseDevice}
+        />
+        <Row
+          title="Delete account and all data"
+          destructive
+          centered
+          chevron={false}
+          onPress={busy ? undefined : confirmDeleteAccount}
+        />
       </Section>
 
       <UpsellSheet reason={upsell} onClose={() => setUpsell(null)} />

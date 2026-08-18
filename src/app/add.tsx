@@ -5,8 +5,8 @@ import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Sharing from 'expo-sharing';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useState } from 'react';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -24,13 +24,15 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { CATEGORY_ICON } from '@/components/category-icon';
-import { PhotoGridPicker } from '@/components/photo-grid-picker';
+import { PdfViewer } from '@/components/pdf-viewer';
 import { PhotoViewer } from '@/components/photo-viewer';
 import { CustomWarrantySheet, type CustomWarranty } from '@/components/custom-warranty-sheet';
 import { UpsellSheet, type UpsellReason } from '@/components/upsell-sheet';
 import { Breathing } from '@/components/ui/breathing';
 import { Motion } from '@/constants/motion';
 import { ThemedText } from '@/components/themed-text';
+import { BarTextButton, ScreenBar } from '@/components/ui/screen-bar';
+import { NativeHeaderText } from '@/components/ui/native-header-action';
 import { InputRow } from '@/components/ui/input-row';
 import { Row, Section } from '@/components/ui/list';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
@@ -71,7 +73,7 @@ function lengthLabel(months: number): string {
  * itself and saves over the original instead of creating a second one.
  */
 export default function AddItemScreen() {
-  const { id } = useLocalSearchParams<{ id?: string }>();
+  const { id, shared } = useLocalSearchParams<{ id?: string; shared?: string }>();
   const { ready, getItem } = useItems();
 
   // The store hydrates asynchronously. Mounting the form before it lands would
@@ -80,10 +82,17 @@ export default function AddItemScreen() {
   if (id && !ready) return null;
 
   const existing = id ? getItem(id) : undefined;
-  return <ItemForm key={existing?.id ?? 'new'} existing={existing} />;
+  return <ItemForm key={existing?.id ?? 'new'} existing={existing} shared={shared} />;
 }
 
-function ItemForm({ existing }: { existing?: WarrantyItem }) {
+function ItemForm({
+  existing,
+  /** A photo or PDF shared in from another app, attached on mount. */
+  shared,
+}: {
+  existing?: WarrantyItem;
+  shared?: string;
+}) {
   const theme = useTheme();
   const router = useRouter();
   const { addItem, updateItem, items } = useItems();
@@ -108,9 +117,9 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
   const [saving, setSaving] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
-  const [libraryOpen, setLibraryOpen] = useState(false);
   const [detected, setDetected] = useState<ReceiptLineItem[]>([]);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  const [pdfUri, setPdfUri] = useState<string | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
   const [upsell, setUpsell] = useState<UpsellReason>(null);
   const [warrantyDays, setWarrantyDays] = useState<number | undefined>(existing?.warrantyDays);
@@ -148,6 +157,18 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
    * is a bonus, so a slow or failing scan must never hold up — or lose — the
    * photo the user just picked.
    */
+  /**
+   * A file shared in from another app arrives as a route param. It is attached
+   * once and only once — acceptPhoto starts an OCR request, so re-running it on
+   * every render would spend scans.
+   */
+  const sharedHandled = useRef(false);
+  useEffect(() => {
+    if (!shared || sharedHandled.current) return;
+    sharedHandled.current = true;
+    acceptPhoto(shared);
+  }, [shared]);
+
   function acceptPhoto(uri: string) {
     const stored = persistPhoto(uri);
     setPhotoUris((current) => [...current, stored]);
@@ -338,6 +359,27 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
     }
   }
 
+  async function pickFromLibrary() {
+    try {
+      if (Platform.OS === 'ios') {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: true,
+        quality: 0.85,
+        selectionLimit: 10,
+      });
+
+      if (result.canceled || !result.assets?.length) return;
+      for (const asset of result.assets) {
+        acceptPhoto(asset.uri);
+      }
+    } catch (err) {
+      Alert.alert('Could not open photos', String(err));
+    }
+  }
+
   function choosePhotoSource() {
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
@@ -347,7 +389,7 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
         },
         (index) => {
           if (index === 1) takePhoto();
-          if (index === 2) setLibraryOpen(true);
+          if (index === 2) void pickFromLibrary();
           if (index === 3) void attachPdf();
         },
       );
@@ -355,7 +397,7 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
     }
     Alert.alert('Add photo', undefined, [
       { text: 'Take photo', onPress: () => takePhoto() },
-      { text: 'Choose from library', onPress: () => setLibraryOpen(true) },
+      { text: 'Choose from library', onPress: () => void pickFromLibrary() },
       { text: 'Attach a PDF', onPress: () => void attachPdf() },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -429,24 +471,35 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
     }
   }
 
+  const native = Platform.OS === 'ios';
+
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>
-      <SafeAreaView style={styles.flex} edges={['top', 'left', 'right']}>
-        <View style={[styles.navBar, { borderBottomColor: theme.separator, backgroundColor: theme.chrome }]}>
-          <Pressable onPress={() => router.back()} accessibilityRole="button" hitSlop={12}>
-            <ThemedText type="body" style={{ color: theme.accent }}>
-              Cancel
-            </ThemedText>
-          </Pressable>
-          <ThemedText type="headline">{existing ? 'Edit Item' : 'New Item'}</ThemedText>
-          <Pressable onPress={save} disabled={!canSave} accessibilityRole="button" hitSlop={12}>
-            <ThemedText
-              type="headline"
-              style={{ color: canSave ? theme.accent : theme.textTertiary }}>
-              Save
-            </ThemedText>
-          </Pressable>
-        </View>
+      {/* iOS draws the modal's bar natively — glass, and the system's own
+          Cancel/Save placement. Android keeps the in-flow ScreenBar. */}
+      {native ? (
+        <Stack.Screen
+          options={{
+            headerShown: true,
+            title: existing ? 'Edit Item' : 'New Item',
+            headerLeft: () => (
+              <NativeHeaderText label="Cancel" onPress={() => router.back()} />
+            ),
+            headerRight: () => (
+              <NativeHeaderText label="Save" prominent disabled={!canSave} onPress={save} />
+            ),
+          }}
+        />
+      ) : null}
+      <SafeAreaView style={styles.flex} edges={native ? ['left', 'right'] : ['top', 'left', 'right']}>
+        {native ? null : (
+          <ScreenBar
+            filled
+            title={existing ? 'Edit Item' : 'New Item'}
+            left={<BarTextButton label="Cancel" onPress={() => router.back()} />}
+            right={<BarTextButton label="Save" prominent disabled={!canSave} onPress={save} />}
+          />
+        )}
 
         <KeyboardAvoidingView
           style={styles.flex}
@@ -495,7 +548,7 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
                   {photoUris.map((uri, index) => (
                     <Pressable
                       key={uri}
-                      onPress={() => (isPdf(uri) ? void openAttachment(uri) : setViewerIndex(index))}
+                      onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
                       onLongPress={() => setPhotoUris((current) => current.filter((p) => p !== uri))}
                       accessibilityRole="imagebutton"
                       accessibilityLabel={
@@ -722,12 +775,6 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
           </ScrollView>
         </KeyboardAvoidingView>
 
-        <PhotoGridPicker
-          visible={libraryOpen}
-          onClose={() => setLibraryOpen(false)}
-          onSelect={acceptPhoto}
-        />
-
         <CustomWarrantySheet
           visible={customOpen}
           onClose={() => setCustomOpen(false)}
@@ -743,6 +790,8 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
           }}
         />
 
+        <PdfViewer uri={pdfUri} visible={pdfUri !== null} onClose={() => setPdfUri(null)} />
+
         <PhotoViewer
           uris={photoUris.filter((uri) => !isPdf(uri))}
           initialIndex={viewerIndex ?? 0}
@@ -757,14 +806,6 @@ function ItemForm({ existing }: { existing?: WarrantyItem }) {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   flex: { flex: 1 },
-  navBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    height: 44,
-    paddingHorizontal: ListMetrics.horizontalInset,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
   content: { paddingTop: Spacing.four, paddingBottom: Spacing.six },
   photoRow: { gap: Spacing.two, padding: ListMetrics.horizontalInset },
   photo: { width: 76, height: 76, borderRadius: Radius.sm },

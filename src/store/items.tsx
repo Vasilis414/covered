@@ -12,6 +12,8 @@ type ItemsContextValue = {
   addItem: (draft: NewWarrantyItem) => Promise<WarrantyItem>;
   updateItem: (id: string, patch: Partial<NewWarrantyItem>) => Promise<void>;
   removeItem: (id: string) => Promise<void>;
+  /** Wipes every item and its files from this device. */
+  clearAll: () => Promise<void>;
   getItem: (id: string) => WarrantyItem | undefined;
   /** Rebuilds every item's reminders — used when the lead times change. */
   rescheduleAll: (offsets: readonly number[]) => Promise<void>;
@@ -99,6 +101,18 @@ export function ItemsProvider({ children }: { children: ReactNode }) {
     [commit, items],
   );
 
+  /**
+   * Erases the whole library from this device. Used by account deletion, where
+   * leaving the data behind would make the deletion a lie.
+   */
+  const clearAll = useCallback(async () => {
+    for (const item of items) {
+      await cancelReminders(item.notificationIds);
+      item.photoUris.forEach(deletePhoto);
+    }
+    await commit([]);
+  }, [commit, items]);
+
   const getItem = useCallback((id: string) => items.find((item) => item.id === id), [items]);
 
   const rescheduleAll = useCallback(
@@ -156,8 +170,8 @@ export function ItemsProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ items, ready, addItem, updateItem, removeItem, getItem, rescheduleAll, replaceAll, mergeItems }),
-    [items, ready, addItem, updateItem, removeItem, getItem, rescheduleAll, replaceAll, mergeItems],
+    () => ({ items, ready, addItem, updateItem, removeItem, clearAll, getItem, rescheduleAll, replaceAll, mergeItems }),
+    [items, ready, addItem, updateItem, removeItem, clearAll, getItem, rescheduleAll, replaceAll, mergeItems],
   );
 
   return <ItemsContext value={value}>{children}</ItemsContext>;

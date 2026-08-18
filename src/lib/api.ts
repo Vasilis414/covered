@@ -1,4 +1,4 @@
-import { File } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { mimeTypeFor } from '@/lib/attachments';
 import type { ReceiptScan } from '@/lib/receipt-parse';
@@ -24,6 +24,7 @@ export type Entitlement = {
   scansRemaining: number | null;
   storageUsed?: number;
   storageLimit?: number;
+  email?: string | null;
 };
 
 export type ScanOutcome =
@@ -75,7 +76,9 @@ export async function fetchEntitlement(idToken: string): Promise<EntitlementResu
 
 export async function scanViaApi(idToken: string, imageUri: string): Promise<ScanOutcome> {
   try {
-    const base64 = await new File(imageUri).base64();
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
     const mimeType = mimeTypeFor(imageUri);
 
     return await withTimeout(async (signal) => {
@@ -139,5 +142,69 @@ export async function acceptScan(idToken: string): Promise<void> {
     });
   } catch {
     // Failing to charge is harmless — the attempt cap still bounds abuse.
+  }
+}
+
+export type StorageScanResult = {
+  name?: string;
+  type?: 'ticket' | 'receipt' | 'barcode' | 'other';
+  barcodePayload?: string;
+  barcodeFormat?: 'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER';
+  expiresAt?: string;
+  notes?: string;
+};
+
+export type StorageScanOutcome =
+  | { ok: true; scan: StorageScanResult }
+  | { ok: false; reason: 'subscription' | 'auth' | 'network' | 'failed' };
+
+export async function scanStorageViaApi(idToken: string, imageUri: string): Promise<StorageScanOutcome> {
+  try {
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const mimeType = mimeTypeFor(imageUri);
+
+    return await withTimeout(async (signal) => {
+      const response = await fetch(`${API_BASE}/storage/scan`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({ image: base64, mimeType }),
+        signal,
+      });
+
+      if (response.status === 402) return { ok: false, reason: 'subscription' } as const;
+      if (response.status === 401) return { ok: false, reason: 'auth' } as const;
+      if (!response.ok) return { ok: false, reason: 'failed' } as const;
+
+      const raw = (await response.json()) as StorageScanResult;
+      return { ok: true, scan: raw } as const;
+    });
+  } catch {
+    return { ok: false, reason: 'network' } as const;
+  }
+}
+
+/**
+ * Permanently deletes the signed-in account on the server.
+ *
+ * Both app stores require this to be reachable from inside the app, and to
+ * actually remove the data rather than just hiding it.
+ */
+export async function deleteAccount(idToken: string): Promise<'ok' | 'error'> {
+  try {
+    return await withTimeout(async (signal) => {
+      const response = await fetch(`${API_BASE}/account`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${idToken}` },
+        signal,
+      });
+      return response.ok ? 'ok' : 'error';
+    });
+  } catch {
+    return 'error';
   }
 }

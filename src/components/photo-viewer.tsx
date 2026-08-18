@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -137,14 +137,14 @@ function ZoomablePhoto({
   const savedX = useSharedValue(0);
   const savedY = useSharedValue(0);
 
-  function reset() {
+  const reset = useCallback(() => {
     scale.value = withTiming(1);
     savedScale.value = 1;
     x.value = withTiming(0);
     y.value = withTiming(0);
     savedX.value = 0;
     savedY.value = 0;
-  }
+  }, [scale, savedScale, x, y, savedX, savedY]);
 
   const pinch = Gesture.Pinch()
     .onUpdate((event) => {
@@ -152,12 +152,7 @@ function ZoomablePhoto({
     })
     .onEnd(() => {
       if (scale.value <= 1) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
-        x.value = withTiming(0);
-        y.value = withTiming(0);
-        savedX.value = 0;
-        savedY.value = 0;
+        reset();
         runOnJS(onZoomChange)(false);
       } else {
         savedScale.value = scale.value;
@@ -166,9 +161,12 @@ function ZoomablePhoto({
     });
 
   const pan = Gesture.Pan()
-    .averageTouches(true)
+    .manualActivation(true)
+    .onTouchesMove((_, state) => {
+      if (scale.value > 1.05) state.activate();
+      else state.fail();
+    })
     .onUpdate((event) => {
-      if (savedScale.value <= 1) return;
       x.value = savedX.value + event.translationX;
       y.value = savedY.value + event.translationY;
     })
@@ -180,13 +178,8 @@ function ZoomablePhoto({
   const doubleTap = Gesture.Tap()
     .numberOfTaps(2)
     .onEnd(() => {
-      if (savedScale.value > 1) {
-        scale.value = withTiming(1);
-        savedScale.value = 1;
-        x.value = withTiming(0);
-        y.value = withTiming(0);
-        savedX.value = 0;
-        savedY.value = 0;
+      if (scale.value > 1) {
+        reset();
         runOnJS(onZoomChange)(false);
       } else {
         scale.value = withTiming(DOUBLE_TAP_SCALE);
@@ -201,7 +194,7 @@ function ZoomablePhoto({
     transform: [{ translateX: x.value }, { translateY: y.value }, { scale: scale.value }],
   }));
 
-  useEffect(() => reset, []);
+  useEffect(() => reset, [reset]);
 
   return (
     <GestureDetector gesture={gesture}>

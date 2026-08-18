@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { StyleSheet, View, type ViewStyle } from 'react-native';
+import { StyleSheet, View, type ColorValue, type ViewStyle } from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useReducedMotion,
@@ -24,8 +24,8 @@ export function ProgressTrack({
 }: {
   /** 0–1. Values outside are clamped by the caller. */
   progress: number;
-  color: string;
-  trackColor: string;
+  color: ColorValue;
+  trackColor: ColorValue;
   style?: ViewStyle;
 }) {
   const reduceMotion = useReducedMotion();
@@ -57,7 +57,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   fill: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     borderRadius: Radius.pill,
     // Grows rightwards from the start of the track, not outwards from the middle.
     transformOrigin: 'left center',

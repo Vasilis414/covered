@@ -1,9 +1,9 @@
-import { File } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { getAiKey, hasAiKey } from '@/lib/ai-config';
 import { sanitiseScan } from '@/lib/scan-shape';
-import type { ReceiptLineItem, ReceiptScan } from '@/lib/receipt-parse';
-import { CATEGORIES, type Category } from '@/types/item';
+import type { ReceiptScan } from '@/lib/receipt-parse';
+import { CATEGORIES } from '@/types/item';
 
 /**
  * Reads a receipt with a vision model instead of OCR-plus-regex.
@@ -98,7 +98,9 @@ export async function aiScanReceipt(imageUri: string): Promise<ReceiptScan | nul
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const base64 = await new File(imageUri).base64();
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
     const mimeType = mimeTypeFor(imageUri);
 
     const body = PROXY_ENDPOINT

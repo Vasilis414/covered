@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { File, Paths } from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   createContext,
   use,
@@ -10,11 +10,12 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { AppState, Platform } from 'react-native';
+import { Alert, AppState, Platform } from 'react-native';
 
 import { API_BASE } from '@/lib/api';
 import { mimeTypeFor } from '@/lib/attachments';
-import { backupToDrive, restoreFromDrive, DRIVE_SCOPE } from '@/lib/drive-backup';
+import { resolvePhotoUri } from '@/lib/photos';
+import { backupToDrive, restoreFromDrive } from '@/lib/drive-backup';
 import { useAuth } from '@/store/auth';
 import { useItems } from '@/store/items';
 import { useSettings } from '@/store/settings';
@@ -42,32 +43,42 @@ type BackupContextValue = {
 const BackupContext = createContext<BackupContextValue | null>(null);
 
 async function uploadFileToServer(token: string, localUri: string): Promise<string> {
-  const base64 = await new File(localUri).base64();
   const name = localUri.split('/').pop() || 'upload';
   const mimeType = mimeTypeFor(localUri);
 
-  const response = await fetch(`${API_BASE}/storage/upload`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
-    body: JSON.stringify({ name, mimeType, content: base64 })
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.json().catch(() => ({}));
-    throw new Error((errorBody as { error?: string }).error || `Upload failed with status ${response.status}`);
+  const fileInfo = await FileSystem.getInfoAsync(localUri);
+  if (!fileInfo.exists) {
+    throw new Error('file not found on device');
   }
 
-  const result = (await response.json()) as { url: string };
+  const response = await FileSystem.uploadAsync(`${API_BASE}/storage/upload`, localUri, {
+    httpMethod: 'POST',
+    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': mimeType,
+      'X-File-Name': encodeURIComponent(name),
+    },
+  });
+
+  if (response.status !== 200) {
+    let err = `status ${response.status}`;
+    try {
+      const parsed = JSON.parse(response.body);
+      err = parsed.error || err;
+    } catch {}
+    throw new Error(err);
+  }
+
+  const result = JSON.parse(response.body) as { url: string };
   return result.url;
 }
 
 export function BackupProvider({ children }: { children: ReactNode }) {
   const { items, ready: itemsReady, mergeItems } = useItems();
   const { storageItems, ready: storageReady, mergeStorageItems } = useStorage();
-  const { entitlement, getAccessToken, getIdToken, signedIn, authProvider, refresh } = useAuth();
+  const { entitlement, getAccessToken, getIdToken, signedIn, authProvider, refresh, signIn, signInWithPlenum } =
+    useAuth();
   const { googleBackupDestination } = useSettings();
 
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
@@ -115,7 +126,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       if (!token) {
         if (reason === 'manual') {
           setStatus('error');
-          setMessage('Could not reach your backup — sign out and back in, then try again.');
+          setMessage('Could not reach your backup. Open Settings and sign in again to restore access to Drive.');
         }
         return;
       }
@@ -126,6 +137,8 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         if (useCloud) {
           const failed: string[] = [];
           let uploaded = 0;
+          /** Attachments whose file is gone — counted so this is never silent. */
+          let missing = 0;
           const updatedPhotoMap = { ...photoMap.current };
 
           const processItems = async <T extends { photoUris: string[]; name: string }>(list: T[]): Promise<T[]> => {
@@ -141,13 +154,39 @@ export function BackupProvider({ children }: { children: ReactNode }) {
                   photoUris.push(updatedPhotoMap[uri]);
                   continue;
                 }
+
+                /**
+                 * A local path that is not on disk is dropped, not re-saved.
+                 *
+                 * Keeping it created a loop nothing could recover from: iOS
+                 * gives the app a new container id on every reinstall, so the
+                 * old path is permanently dead; restore put that dead path
+                 * into state, the next backup found no file and skipped the
+                 * upload, and wrote the dead path back to the server. The
+                 * bytes were never uploaded and never could be.
+                 */
+                // Rebase first: a path from a previous install points at a
+                // container that no longer exists, but the file is still there.
+                const localUri = resolvePhotoUri(uri);
                 try {
-                  const serverUrl = await uploadFileToServer(token, uri);
+                  const fileInfo = await FileSystem.getInfoAsync(localUri);
+                  if (!fileInfo.exists) {
+                    missing += 1;
+                    continue;
+                  }
+                } catch {
+                  missing += 1;
+                  continue;
+                }
+
+                try {
+                  const serverUrl = await uploadFileToServer(token, localUri);
                   updatedPhotoMap[uri] = serverUrl;
                   photoUris.push(serverUrl);
                   uploaded += 1;
-                } catch {
-                  failed.push(item.name.slice(0, 30));
+                } catch (err: any) {
+                  failed.push(`${item.name || 'item'} (${err?.message || 'error'})`);
+                  photoUris.push(uri);
                 }
               }
               result.push({ ...item, photoUris });
@@ -190,9 +229,18 @@ export function BackupProvider({ children }: { children: ReactNode }) {
             `Backed up ${backupResult.itemCount} item${backupResult.itemCount === 1 ? '' : 's'}` +
             (uploaded ? ` and ${uploaded} new file${uploaded === 1 ? '' : 's'}` : '');
 
-          if (failed.length > 0) {
+          const isDev = entitlement?.email === 'vas93333@gmail.com' || entitlement?.email === 'vasilis@plenum.gr';
+          if (missing > 0) {
+            // Dropped rather than uploaded — say so, because the item silently
+            // losing its receipt is exactly what a backup is meant to prevent.
             setStatus('error');
-            setMessage(`${summary}, but ${failed.length} file${failed.length === 1 ? '' : 's'} could not be saved.`);
+            setMessage(
+              `${summary}. ${missing} attachment${missing === 1 ? '' : 's'} could not be found on this device and ${missing === 1 ? 'was' : 'were'} removed from the backup.`,
+            );
+          } else if (failed.length > 0) {
+            setStatus('error');
+            const details = isDev ? `: ${failed.join(', ')}` : '.';
+            setMessage(`${summary}, but ${failed.length} file${failed.length === 1 ? '' : 's'} could not be saved${details}`);
           } else {
             setStatus('idle');
             setMessage(summary);
@@ -224,7 +272,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         setStatus('error');
         const errStr = String(error);
         if (errStr.includes('unauthorized') || errStr.includes('401')) {
-          setMessage('Your session has expired. Please sign out and sign back in to renew your connection.');
+          promptReauth();
         } else {
           setMessage(errStr);
         }
@@ -232,7 +280,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         running.current = false;
       }
     },
-    [premium, items, storageItems, authProvider, useCloud, getIdToken, getAccessToken, persist, refresh],
+    [premium, items, storageItems, useCloud, getIdToken, getAccessToken, persist, refresh, entitlement?.email],
   );
 
   // Auto-backup: debounce so a burst of edits produces one upload.
@@ -253,42 +301,82 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     return () => subscription.remove();
   }, [run]);
 
+  /**
+   * Recovers an expired session without making the user sign out first.
+   *
+   * Plenum's OAuth server issues no refresh token and rejects the
+   * refresh_token grant, so the access token cannot be renewed silently — the
+   * authorisation flow has to run again. It is usually a single tap, because
+   * the browser still holds the plenum.gr session cookie.
+   */
+  const promptReauth = useCallback(() => {
+    setMessage('Your session expired. Sign in again to keep backing up.');
+    Alert.alert(
+      'Session expired',
+      'Your sign-in with Plenum has timed out. Sign in again to resume backups — you should not need to re-enter anything.',
+      [
+        { text: 'Later', style: 'cancel' },
+        {
+          text: 'Sign in again',
+          onPress: () => {
+            void (authProvider === 'plenum' ? signInWithPlenum() : signIn());
+          },
+        },
+      ],
+    );
+  }, [authProvider, signInWithPlenum, signIn]);
+
   const downloadPhotos = useCallback(async <T extends { photoUris: string[]; id: string }>(list: T[], token: string): Promise<T[]> => {
     const result: T[] = [];
+    const dir = `${FileSystem.documentDirectory}photos/`;
+    try {
+      const dirInfo = await FileSystem.getInfoAsync(dir);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+      }
+    } catch {}
+
     for (const item of list) {
       const photoUris: string[] = [];
       for (const uri of item.photoUris) {
+        /**
+         * A local path is only meaningful on the device that wrote it. The
+         * container is not the same one after a reinstall, and it was never the
+         * same on a second phone — so a file:// entry that is not actually
+         * there is dropped rather than kept as a tile that can never load.
+         */
         if (uri.startsWith('file://')) {
-          photoUris.push(uri);
+          const localUri = resolvePhotoUri(uri);
+          try {
+            const info = await FileSystem.getInfoAsync(localUri);
+            if (info.exists) photoUris.push(localUri);
+          } catch {
+            // Unreadable counts as not there.
+          }
           continue;
         }
         try {
-          const fileId = uri.split('/').pop() || '';
-          const fileResponse = await fetch(uri, {
-            headers: { Authorization: `Bearer ${token}` }
-          });
-          if (!fileResponse.ok) throw new Error('File download failed');
-          const blob = await fileResponse.blob();
-          const base64 = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const res = reader.result as string;
-              resolve(res.split(',')[1]);
-            };
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
-          });
+          const remoteName = uri.split('/').pop() || 'file';
+          // Keep the real extension. Forcing .jpg turned every restored PDF
+          // into "invoice.pdf.jpg", which isPdf() then failed to recognise.
+          const hasExtension = /\.[a-z0-9]{2,5}$/i.test(remoteName);
+          const fileId = hasExtension ? remoteName : `${remoteName}.jpg`;
+          const targetUri = `${dir}${fileId}`;
 
-          const contentType = fileResponse.headers.get('Content-Type') || '';
-          let extension = 'jpg';
-          if (contentType.includes('png')) extension = 'png';
-          else if (contentType.includes('pdf')) extension = 'pdf';
-          else if (contentType.includes('webp')) extension = 'webp';
+          // If file is already cached on local disk from an earlier sync, skip downloading!
+          const existingInfo = await FileSystem.getInfoAsync(targetUri);
+          if (existingInfo.exists) {
+            photoUris.push(targetUri);
+            continue;
+          }
 
-          const target = new File(Paths.document, 'photos', `${fileId}.${extension}`);
-          await target.parentDirectory.create({ intermediates: true, idempotent: true });
-          await target.write(base64, { encoding: 'base64' });
-          photoUris.push(target.uri);
+          const downloaded = await FileSystem.downloadAsync(uri, targetUri, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (downloaded.status !== 200) {
+            throw new Error(`download status ${downloaded.status}`);
+          }
+          photoUris.push(downloaded.uri);
         } catch (err) {
           console.warn('Failed to download photo:', uri, err);
           photoUris.push(uri);
@@ -365,7 +453,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
     const token = useCloud ? getIdToken() : await getAccessToken();
     if (!token) {
       setStatus('error');
-      setMessage('Could not reach your backup — sign out and back in, then try again.');
+      setMessage('Could not reach your backup. Open Settings and sign in again to restore access to Drive.');
       return null;
     }
     setStatus('running');
@@ -427,13 +515,13 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       setStatus('error');
       const errStr = String(error);
       if (errStr.includes('401') || errStr.includes('unauthorized')) {
-        setMessage('Your session has expired. Please sign out and sign back in to renew your connection.');
+        promptReauth();
       } else {
         setMessage(errStr);
       }
       return null;
     }
-  }, [authProvider, useCloud, getIdToken, getAccessToken, mergeItems, mergeStorageItems, downloadPhotos]);
+  }, [useCloud, getIdToken, getAccessToken, mergeItems, mergeStorageItems, downloadPhotos]);
 
   const value = useMemo(
     () => ({ lastBackupAt, status, message, backupNow, restoreNow }),

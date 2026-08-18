@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { SheetBackdrop } from '@/components/ui/sheet-backdrop';
 import { WheelPicker } from '@/components/ui/wheel-picker';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -44,25 +45,33 @@ export function CustomWarrantySheet({
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={[styles.sheet, { backgroundColor: theme.card }]}>
-        <View style={[styles.header, { borderBottomColor: theme.separator }]}>
-          <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button">
-            <ThemedText type="body" style={{ color: theme.accent }}>
-              Cancel
-            </ThemedText>
-          </Pressable>
-          <ThemedText type="headline">Custom cover</ThemedText>
-          <Pressable onPress={confirm} hitSlop={12} accessibilityRole="button">
-            <ThemedText type="headline" style={{ color: theme.accent }}>
-              Set
-            </ThemedText>
-          </Pressable>
-        </View>
+      {/*
+        The sheet is pinned to the bottom by this container, not by the
+        backdrop. The old backdrop was a `flex: 1` sibling doing that job by
+        side effect, so when it became an absolutely positioned blur the sheet
+        lost its spacer and slid up under the status bar.
+      */}
+      <View style={styles.root}>
+        <SheetBackdrop onPress={onClose} />
+        <View style={[styles.sheet, { backgroundColor: theme.card }]}>
+          <View style={[styles.header, { borderBottomColor: theme.separator }]}>
+            <Pressable onPress={onClose} hitSlop={12} accessibilityRole="button">
+              <ThemedText type="body" style={{ color: theme.accent }}>
+                Cancel
+              </ThemedText>
+            </Pressable>
+            <ThemedText type="headline">Custom cover</ThemedText>
+            <Pressable onPress={confirm} hitSlop={12} accessibilityRole="button">
+              <ThemedText type="headline" style={{ color: theme.accent }}>
+                Set
+              </ThemedText>
+            </Pressable>
+          </View>
 
-        <View style={styles.wheels}>
-          <WheelPicker values={AMOUNTS} value={amount} onChange={setAmount} />
-          <WheelPicker values={UNITS} value={unit} onChange={setUnit} />
+          <View style={styles.wheels}>
+            <WheelPicker values={AMOUNTS} value={amount} onChange={setAmount} />
+            <WheelPicker values={UNITS} value={unit} onChange={setUnit} />
+          </View>
         </View>
       </View>
     </Modal>
@@ -70,7 +79,7 @@ export function CustomWarrantySheet({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)' },
+  root: { flex: 1, justifyContent: 'flex-end' },
   sheet: {
     borderTopLeftRadius: Radius.lg,
     borderTopRightRadius: Radius.lg,

@@ -1,7 +1,7 @@
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { Ionicons } from '@expo/vector-icons';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { ItemRow } from '@/components/item-row';
@@ -9,6 +9,7 @@ import { UpsellSheet, type UpsellReason } from '@/components/upsell-sheet';
 import { ThemedText } from '@/components/themed-text';
 import { EmptyState } from '@/components/ui/empty-state';
 import { LargeTitleScreen } from '@/components/ui/large-title-screen';
+import { NativeHeaderAction } from '@/components/ui/native-header-action';
 import { Section } from '@/components/ui/list';
 import { Segmented } from '@/components/ui/segmented';
 import { Motion } from '@/constants/motion';
@@ -77,13 +78,8 @@ export default function ItemsScreen() {
     router.push({ pathname: '/item/[id]', params: { id } });
   }
 
-  return (
-    <LargeTitleScreen
-      title="Items"
-      actionIcon="add"
-      actionLabel="Add item"
-      onActionPress={() => router.push('/add')}
-      search={{ value: query, onChangeText: setQuery, placeholder: 'Search' }}>
+  const body = (
+    <>
       <Segmented options={FILTERS} value={filter} onChange={setFilter} />
 
       {showPrompt ? (
@@ -120,12 +116,15 @@ export default function ItemsScreen() {
       {visible.length === 0 ? (
         <EmptyState
           icon={items.length === 0 ? 'receipt-outline' : 'search-outline'}
+          sfSymbol={items.length === 0 ? 'doc.text.image' : 'magnifyingglass'}
           title={items.length === 0 ? 'No items yet' : 'No matches'}
           body={
             items.length === 0
-              ? 'Tap + to add something you own. Covered warns you before the warranty runs out.'
+              ? 'Covered warns you before a warranty runs out.'
               : 'Try a different search or filter.'
           }
+          actionLabel={items.length === 0 ? 'Add your first item' : undefined}
+          onAction={items.length === 0 ? () => router.push('/add') : undefined}
         />
       ) : (
         groups.map((group, index) => (
@@ -152,6 +151,54 @@ export default function ItemsScreen() {
       <UpsellSheet reason={upsell} onClose={() => setUpsell(null)} />
 
       <View style={styles.tabInset} />
+    </>
+  );
+
+  /**
+   * iOS hands the title and the search field to the native nav bar, so the
+   * screen is just a scroll view underneath it. `automatic` inset adjustment
+   * is what makes the content start below the large title and slide under it.
+   */
+  if (Platform.OS === 'ios') {
+    return (
+      <>
+        <Stack.Screen
+          options={{
+            title: 'Items',
+            headerRight: () => (
+              <NativeHeaderAction
+                symbol="plus"
+                label="Add item"
+                onPress={() => router.push('/add')}
+              />
+            ),
+            headerSearchBarOptions: {
+              placeholder: 'Search',
+              onChangeText: (event) => setQuery(event.nativeEvent.text),
+              onClose: () => setQuery(''),
+              hideWhenScrolling: false,
+            },
+          }}
+        />
+        <ScrollView
+          contentInsetAdjustmentBehavior="automatic"
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}>
+          {body}
+        </ScrollView>
+      </>
+    );
+  }
+
+  return (
+    <LargeTitleScreen
+      title="Items"
+      actionIcon="add"
+      actionLabel="Add item"
+      onActionPress={() => router.push('/add')}
+      search={{ value: query, onChangeText: setQuery, placeholder: 'Search' }}>
+      {body}
     </LargeTitleScreen>
   );
 }
