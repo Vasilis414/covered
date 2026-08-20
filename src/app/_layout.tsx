@@ -6,6 +6,8 @@ import { Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { ShareIntentSheet } from '@/components/share-intent-sheet';
+import { AmbientBackdrop } from '@/components/ui/ambient-backdrop';
+import { ScreenTint } from '@/constants/design';
 import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 import { AuthProvider } from '@/store/auth';
 import { BackupProvider } from '@/store/backup';
@@ -29,12 +31,28 @@ function RootNavigator() {
 
   return (
     <ThemeProvider value={scheme === 'dark' ? DarkTheme : DefaultTheme}>
+      {/*
+        The ambient ground, drawn once behind the whole navigator.
+        Screens are transparent so it shows through and stays continuous across
+        a push — drawing it per screen made it restart on every navigation.
+      */}
+      <AmbientBackdrop tint={ScreenTint.warranties} />
       <Stack
         screenOptions={{
           headerTintColor: theme.accent,
           headerTitleStyle: { color: theme.text },
-          headerStyle: { backgroundColor: theme.chrome },
-          contentStyle: { backgroundColor: theme.background },
+          headerStyle: { backgroundColor: 'transparent' },
+          /**
+           * Deliberately not headerTransparent.
+           *
+           * That option lays content out underneath the header, and
+           * react-navigation then reports a top inset that already includes
+           * the header height. LargeTitleScreen adds NAV_BAR_HEIGHT to
+           * insets.top itself, so every screen using it gained a second
+           * header's worth of empty space. A transparent background alone
+           * lets the backdrop through without touching the inset maths.
+           */
+          contentStyle: { backgroundColor: 'transparent' },
         }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         {/* These two set headerShown themselves: iOS uses the native modal bar,
