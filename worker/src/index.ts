@@ -121,6 +121,9 @@ const STORAGE_SCAN_SCHEMA = {
   required: ['name', 'type'],
 } as const;
 
+/** Must match PRO_ENTITLEMENT_ID in the app's src/lib/subscriptions.ts. */
+const PRO_ENTITLEMENT = 'Covered';
+
 type Account = {
   userId: string;
   plan: string;
@@ -635,6 +638,285 @@ async function handleBackupGet(env: Env, account: Account): Promise<Response> {
  * Stored objects are shared by hash, so an object is only removed from GCS once
  * no other account still references it.
  */
+/**
+ * Where a store subscription lives, as far as this server is concerned.
+ *
+ * RevenueCat is the integration with Apple and Play, but it is keyed by its
+ * own app user id and will happily move a receipt between them. This table is
+ * the record of which *account* owns a subscription, so the answer survives
+ * signing out, reinstalling, and switching devices.
+ */
+type StoreSubscription = {
+  store: string;
+  subscriptionId: string;
+  productId: string;
+  expiresAt: string | null;
+};
+
+/**
+ * Asks RevenueCat what this account actually owns.
+ *
+ * Deliberately server-to-server rather than trusting a field from the app: the
+ * client can claim anything, and the whole point of binding is that the claim
+ * is checked.
+ */
+async function fetchStoreSubscription(
+  env: Env,
+  appUserId: string,
+): Promise<StoreSubscription | null> {
+  const key = env.REVENUECAT_SECRET_KEY;
+  if (!key) return null;
+
+  const res = await fetch(
+    `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(appUserId)}`,
+    { headers: { Authorization: `Bearer ${key}` } },
+  );
+  if (!res.ok) return null;
+
+  const body = (await res.json()) as {
+    subscriber?: {
+      entitlements?: Record<string, { expires_date?: string | null; product_identifier?: string }>;
+      subscriptions?: Record<string, Record<string, unknown>>;
+    };
+  };
+
+  const entitlement = body.subscriber?.entitlements?.[PRO_ENTITLEMENT];
+  if (!entitlement) return null;
+
+  // An entitlement with no expiry is lifetime; one in the past is not active.
+  const expiresAt = entitlement.expires_date ?? null;
+  if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) return null;
+
+  const productId = entitlement.product_identifier ?? '';
+  const sub = body.subscriber?.subscriptions?.[productId] ?? {};
+
+  /**
+   * Prefer the id that survives renewals.
+   *
+   * Apple issues a fresh transaction id every renewal, so binding to that
+   * would unbind the account every month. original_transaction_id is stable
+   * for the life of the subscription; the others are fallbacks for stores and
+   * API versions that do not return it.
+   */
+  const subscriptionId =
+    (sub.original_transaction_id as string | undefined) ??
+    (sub.store_transaction_id as string | undefined) ??
+    (sub.original_purchase_date as string | undefined);
+  if (!subscriptionId) return null;
+
+  return {
+    store: (sub.store as string | undefined) ?? 'unknown',
+    subscriptionId,
+    productId,
+    expiresAt,
+  };
+}
+
+/** Which account, if any, already owns this subscription. */
+async function ownerOfSubscription(env: Env, subscriptionId: string): Promise<string | null> {
+  const row = await env.DB.prepare(
+    `SELECT user_id AS userId FROM entitlements WHERE store_subscription_id = ?`,
+  )
+    .bind(subscriptionId)
+    .first<{ userId: string }>();
+  return row?.userId ?? null;
+}
+
+/**
+ * Binds the caller's store subscription to their account, or explains why not.
+ *
+ * Called after a purchase and after Restore Purchases. The conflict case is
+ * the reason this exists: restoring under a second account must not hand that
+ * account Pro as well, because one payment is one subscription.
+ */
+async function handleSubscriptionLink(env: Env, account: Account): Promise<Response> {
+  const sub = await fetchStoreSubscription(env, account.userId);
+  if (!sub) return json({ error: 'no_active_subscription' }, 404);
+
+  const owner = await ownerOfSubscription(env, sub.subscriptionId);
+  if (owner && owner !== account.userId) {
+    return json(
+      {
+        error: 'subscription_already_linked',
+        message: 'This subscription is already connected to another account.',
+      },
+      409,
+    );
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO entitlements (user_id, plan, expires_at, store, store_subscription_id, updated_at)
+          VALUES (?, 'pro', ?, ?, ?, datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET
+          plan = 'pro',
+          expires_at = excluded.expires_at,
+          store = excluded.store,
+          store_subscription_id = excluded.store_subscription_id,
+          updated_at = datetime('now')`,
+  )
+    .bind(account.userId, sub.expiresAt, sub.store, sub.subscriptionId)
+    .run();
+
+  return json({ ok: true, plan: 'pro', expiresAt: sub.expiresAt });
+}
+
+/**
+ * Keeps the binding current as RevenueCat learns about renewals and endings.
+ *
+ * Without this the row would freeze at whatever /subscription/link saw, so a
+ * cancelled subscription would keep granting Pro until its original expiry and
+ * a renewal would expire early. Unauthenticated by design — RevenueCat calls
+ * it — so the shared secret is the only thing standing in front of it.
+ */
+/**
+ * Compares without leaking where two strings diverge.
+ *
+ * A plain !== returns as soon as it finds a difference, and the time that
+ * takes is measurable across many attempts — enough to recover a secret byte
+ * by byte. Constant work regardless of input closes that.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Checks RevenueCat's HMAC-SHA256 over the raw request body. */
+async function verifyHmac(secret: string, body: string, signature: string): Promise<boolean> {
+  if (!signature) return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body));
+    const hex = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return timingSafeEqual(hex.toLowerCase(), signature.trim().toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+async function handleRevenueCatWebhook(request: Request, env: Env): Promise<Response> {
+  const expected = env.REVENUECAT_WEBHOOK_SECRET;
+  if (!expected) return json({ error: 'webhook_not_configured' }, 503);
+  if (!timingSafeEqual(request.headers.get('Authorization') ?? '', expected)) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+
+  /**
+   * Read once, as text, because the signature covers the exact bytes sent.
+   *
+   * Parsing to JSON and re-serialising would reorder keys and change spacing,
+   * and the HMAC would never match.
+   */
+  const raw = await request.text();
+
+  /**
+   * Verified only when a signing secret is configured.
+   *
+   * Optional so the endpoint keeps working while HMAC signing is being turned
+   * on in the dashboard — but once the secret is set, a request without a
+   * valid signature is refused rather than quietly downgraded to header-only
+   * auth, which would make enabling it pointless.
+   */
+  if (env.REVENUECAT_WEBHOOK_SIGNING_KEY) {
+    const signature = request.headers.get('X-RevenueCat-Signature') ?? '';
+    const ok = await verifyHmac(env.REVENUECAT_WEBHOOK_SIGNING_KEY, raw, signature);
+    if (!ok) return json({ error: 'bad_signature' }, 401);
+  }
+
+  let body: { event?: Record<string, unknown> };
+  try {
+    body = JSON.parse(raw) as { event?: Record<string, unknown> };
+  } catch {
+    return json({ error: 'invalid_json' }, 400);
+  }
+
+  const event = body.event ?? {};
+  const type = String(event.type ?? '');
+  const appUserId = String(event.app_user_id ?? '');
+  if (!appUserId) return json({ ok: true, ignored: 'no_app_user_id' });
+
+  /**
+   * Anonymous ids are not accounts.
+   *
+   * A purchase made before sign-in is keyed by RevenueCat's own anonymous id,
+   * which matches no user row. Binding on it would write a row that no account
+   * can ever claim; /subscription/link picks these up once the user signs in.
+   */
+  if (appUserId.startsWith('$RCAnonymousID:')) {
+    return json({ ok: true, ignored: 'anonymous' });
+  }
+
+  const expiresAt = event.expiration_at_ms
+    ? new Date(Number(event.expiration_at_ms)).toISOString()
+    : null;
+  const subscriptionId =
+    (event.original_transaction_id as string | undefined) ??
+    (event.transaction_id as string | undefined) ??
+    null;
+
+  /**
+   * Ending events revoke, everything else grants.
+   *
+   * EXPIRATION and REFUND are the only ones that mean "no longer entitled".
+   * CANCELLATION fires when auto-renew is switched off, which leaves the user
+   * paid until the period actually ends — treating it as revocation would cut
+   * off someone who has already paid for the rest of the month.
+   */
+  const revokes = type === 'EXPIRATION' || type === 'REFUND';
+
+  if (revokes) {
+    await env.DB.prepare(
+      `UPDATE entitlements
+          SET plan = 'free', expires_at = NULL, store_subscription_id = NULL,
+              updated_at = datetime('now')
+        WHERE user_id = ?`,
+    )
+      .bind(appUserId)
+      .run();
+    return json({ ok: true, type, plan: 'free' });
+  }
+
+  /**
+   * A TRANSFER moves the receipt off whoever held it before.
+   *
+   * RevenueCat fires this when the same store account restores under a
+   * different app user id. Clearing the old row keeps the unique index true
+   * and stops the previous account from keeping Pro it no longer owns.
+   */
+  if (subscriptionId) {
+    await env.DB.prepare(
+      `UPDATE entitlements
+          SET plan = 'free', expires_at = NULL, store_subscription_id = NULL,
+              updated_at = datetime('now')
+        WHERE store_subscription_id = ? AND user_id != ?`,
+    )
+      .bind(subscriptionId, appUserId)
+      .run();
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO entitlements (user_id, plan, expires_at, store, store_subscription_id, updated_at)
+          VALUES (?, 'pro', ?, ?, ?, datetime('now'))
+     ON CONFLICT(user_id) DO UPDATE SET
+          plan = 'pro',
+          expires_at = excluded.expires_at,
+          store = COALESCE(excluded.store, entitlements.store),
+          store_subscription_id = COALESCE(excluded.store_subscription_id, entitlements.store_subscription_id),
+          updated_at = datetime('now')`,
+  )
+    .bind(appUserId, expiresAt, String(event.store ?? 'unknown'), subscriptionId)
+    .run();
+
+  return json({ ok: true, type, plan: 'pro' });
+}
+
 async function handleAccountDelete(env: Env, account: Account): Promise<Response> {
   const files = await env.DB.prepare(
     `SELECT id, gcs_path AS gcsPath, hash FROM user_files WHERE user_id = ?`,
@@ -901,6 +1183,14 @@ export default {
     const url = new URL(request.url);
 
     try {
+      /**
+       * Ahead of authenticate() on purpose: RevenueCat calls this, and it has
+       * no Google identity to present. Its own shared secret guards it.
+       */
+      if (url.pathname === '/revenuecat/webhook' && request.method === 'POST') {
+        return await handleRevenueCatWebhook(request, env);
+      }
+
       const identity = await authenticate(request, env);
       if (!identity) return json({ error: 'unauthorized' }, 401);
 
@@ -928,6 +1218,9 @@ export default {
         }
 
         return json({
+          // Identifies the account to RevenueCat so a subscription follows the
+          // person who bought it rather than the handset it was bought on.
+          userId: account.userId,
           plan: account.plan,
           paid,
           expiresAt: account.expiresAt,
@@ -950,6 +1243,10 @@ export default {
 
       if (url.pathname === '/scan/accept' && request.method === 'POST') {
         return await handleScanAccept(env, account);
+      }
+
+      if (url.pathname === '/subscription/link' && request.method === 'POST') {
+        return await handleSubscriptionLink(env, account);
       }
 
       if (url.pathname === '/account' && request.method === 'DELETE') {

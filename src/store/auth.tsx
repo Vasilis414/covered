@@ -5,21 +5,63 @@ import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import {
   createContext,
+  type Dispatch,
+  type SetStateAction,
   use,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { Alert, AppState, Platform } from 'react-native';
 
-import { fetchEntitlement, type Entitlement } from '@/lib/api';
+import { fetchEntitlement, linkSubscription, type Entitlement } from '@/lib/api';
 import { DRIVE_SCOPE } from '@/lib/drive-backup';
+import {
+  configureRevenueCat,
+  forgetUser,
+  identifyUser,
+  syncStorePurchases,
+  PRO_ENTITLEMENT_ID,
+} from '@/lib/subscriptions';
+import Purchases, { type CustomerInfo } from 'react-native-purchases';
 
 WebBrowser.maybeCompleteAuthSession();
 
 const TOKEN_KEY = 'covered.google.idtoken';
+
+/** Storage a paid account gets, in bytes. */
+const PRO_STORAGE_LIMIT = 500 * 1024 * 1024;
+
+/**
+ * Overlays a confirmed store purchase onto whatever the server reported.
+ *
+ * The server is the record for plan, expiry and usage, but it does not learn
+ * about an App Store purchase until RevenueCat's webhook reaches it. Until
+ * then `/me` still answers `paid: false`, and letting that response land as-is
+ * downgraded someone who had just paid — every cold start dropped them back to
+ * free until they hit Restore Purchases. The store's answer wins on whether
+ * Pro is active; the server's wins on everything else.
+ */
+function withStorePro(server: Entitlement | null, storePro: boolean): Entitlement | null {
+  if (!storePro) return server;
+  const base: Entitlement = server ?? {
+    plan: 'pro',
+    paid: true,
+    expiresAt: null,
+    scansUsed: 0,
+    scansRemaining: null,
+  };
+  return {
+    ...base,
+    paid: true,
+    storageLimit: base.storageLimit ?? PRO_STORAGE_LIMIT,
+    // null means unlimited, per the Entitlement contract.
+    scansRemaining: null,
+  };
+}
 
 /**
  * The last entitlement the server told us about.
@@ -113,7 +155,9 @@ type AuthContextValue = {
   getIdToken: () => string | undefined;
   /** OAuth access token for Drive. Null when signed out or the grant failed. */
   getAccessToken: () => Promise<string | null>;
-  setEntitlement: (entitlement: Entitlement) => void;
+  /** The raw React setter, so callers can merge from the current value
+   * rather than overwrite fields like scansUsed they do not know about. */
+  setEntitlement: Dispatch<SetStateAction<Entitlement | null>>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -143,18 +187,95 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
   }, [google]);
 
+  /**
+   * Whether the store says Pro is active, independent of the server.
+   *
+   * A ref rather than state: every server response needs the current value at
+   * the moment it lands, and a stale closure here would silently reintroduce
+   * the downgrade this exists to prevent.
+   */
+  const storeProRef = useRef(false);
+  const [storePro, setStorePro] = useState(false);
+
+  const applyServerEntitlement = useCallback((next: Entitlement | null) => {
+    setEntitlement(withStorePro(next, storeProRef.current));
+  }, []);
+
+  useEffect(() => {
+    configureRevenueCat();
+    if (Platform.OS === 'web') return;
+
+    const apply = (info: CustomerInfo) => {
+      const isPro = info.entitlements.active[PRO_ENTITLEMENT_ID] !== undefined;
+      storeProRef.current = isPro;
+      setStorePro(isPro);
+      // Only the store's "yes" is acted on here. A "no" may just mean the
+      // purchase has not synced yet, and the server remains the record.
+      if (isPro) setEntitlement((current) => withStorePro(current, true));
+    };
+
+    try {
+      Purchases.getCustomerInfo().then(apply).catch(() => {});
+      Purchases.addCustomerInfoUpdateListener(apply);
+    } catch (err) {
+      console.warn('[RevenueCat] Initialization error:', err);
+    }
+  }, []);
+
+  /**
+   * Claims the store subscription for whichever account is signed in.
+   *
+   * Runs on purchase, on Restore Purchases and on sign-in, because all three
+   * end in the same state: this device holds a receipt and an account that may
+   * or may not be allowed to use it. The server owns that decision — one paid
+   * subscription entitles one account — and a refusal has to undo the local
+   * grant, otherwise the app would show Pro that the server will not honour.
+   */
+  useEffect(() => {
+    if (!storePro || !idToken) return;
+    let cancelled = false;
+
+    void linkSubscription(idToken).then((result) => {
+      if (cancelled) return;
+      if (result.ok) {
+        // The server now records the purchase; take its version as the truth.
+        void refresh();
+        return;
+      }
+      if (result.reason === 'already_linked') {
+        storeProRef.current = false;
+        setStorePro(false);
+        setEntitlement((current) => (current ? { ...current, paid: false } : current));
+        Alert.alert(
+          'Subscription already in use',
+          'This subscription is already connected to another account. Sign in with that account to use it, or subscribe again on this one.',
+        );
+      }
+      // 'no_subscription' and 'network' are left alone: the store may simply
+      // not have synced yet, and dropping Pro on a flaky connection would be
+      // worse than briefly trusting the device.
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [storePro, idToken]);
+
   const applyToken = useCallback(async (token: string | null) => {
     setIdToken(token);
     if (!token) {
       await SecureStore.deleteItemAsync(TOKEN_KEY);
       await cacheEntitlement(null);
+      // Whoever signs in next must not inherit this account's purchase.
+      storeProRef.current = false;
+      setStorePro(false);
       setEntitlement(null);
       return;
     }
     await SecureStore.setItemAsync(TOKEN_KEY, token);
     const result = await fetchEntitlement(token);
     if (result.ok) {
-      setEntitlement(result.entitlement);
+      applyServerEntitlement(result.entitlement);
       await cacheEntitlement(result.entitlement);
     }
   }, []);
@@ -162,10 +283,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /** Ends the local session without pretending Google's is ours to end. */
   const clearSession = useCallback(async () => {
     setIdToken(null);
+    // Whoever signs in next must not inherit this account's purchase.
+    storeProRef.current = false;
+    setStorePro(false);
     setEntitlement(null);
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await cacheEntitlement(null);
   }, []);
+
+  /**
+   * Keeps the RevenueCat identity in step with the signed-in account.
+   *
+   * Every route into a session — interactive sign-in, silent restore, access
+   * code, expiry — ends up changing `entitlement`, so watching its userId here
+   * covers them all rather than relying on four call sites to remember. logIn
+   * with an unchanged id is a no-op, so re-running this is harmless.
+   */
+  const identifiedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const userId = entitlement?.userId ?? null;
+    if (identifiedRef.current === userId) return;
+    identifiedRef.current = userId;
+    void (userId
+      ? // Sync after logIn so a switched-to account is evaluated against the
+        // store receipt now, rather than on the next cold start.
+        identifyUser(userId).then(() => syncStorePurchases())
+      : forgetUser());
+  }, [entitlement?.userId]);
 
   /**
    * Trades the stored Google credential for a fresh ID token without any UI.
@@ -194,7 +338,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!stillMounted()) return;
 
       if (result.ok) {
-        setEntitlement(result.entitlement);
+        applyServerEntitlement(result.entitlement);
         await cacheEntitlement(result.entitlement);
         return;
       }
@@ -219,7 +363,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const retry = await fetchEntitlement(fresh);
       if (!stillMounted()) return;
       if (retry.ok) {
-        setEntitlement(retry.entitlement);
+        applyServerEntitlement(retry.entitlement);
         await cacheEntitlement(retry.entitlement);
       } else if (retry.reason === 'auth') {
         await clearSession();
@@ -252,7 +396,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const cached = await readCachedEntitlement();
       if (!active) return;
       setIdToken(stored);
-      if (cached) setEntitlement(cached);
+      if (cached) applyServerEntitlement(cached);
       setReady(true);
 
       await verifySession(stored, stillMounted);
@@ -389,7 +533,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const result = await fetchEntitlement(token);
       if (!result.ok) return false;
       setIdToken(token);
-      setEntitlement(result.entitlement);
+      applyServerEntitlement(result.entitlement);
       await SecureStore.setItemAsync(TOKEN_KEY, token);
       await cacheEntitlement(result.entitlement);
       return true;
@@ -410,7 +554,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!idToken) return;
     const result = await fetchEntitlement(idToken);
     if (result.ok) {
-      setEntitlement(result.entitlement);
+      applyServerEntitlement(result.entitlement);
       await cacheEntitlement(result.entitlement);
     }
   }, [idToken]);

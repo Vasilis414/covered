@@ -1,11 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
-import BarcodeScanning, { BarcodeFormat } from '@react-native-ml-kit/barcode-scanning';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
@@ -13,7 +13,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  UIManager,
   View,
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -26,7 +25,7 @@ import { ThemedText } from '@/components/themed-text';
 import { BarTextButton, ScreenBar } from '@/components/ui/screen-bar';
 import { NativeHeaderText } from '@/components/ui/native-header-action';
 import { InputRow } from '@/components/ui/input-row';
-import { Section } from '@/components/ui/list';
+import { Row, Section } from '@/components/ui/list';
 import { Segmented } from '@/components/ui/segmented';
 import { Motion } from '@/constants/motion';
 import { Radius, Spacing, ListMetrics } from '@/constants/theme';
@@ -35,11 +34,7 @@ import { isPdf } from '@/lib/attachments';
 import { scanStorageViaApi } from '@/lib/api';
 import { persistPhoto, deletePhoto } from '@/lib/photos';
 import { useAuth } from '@/store/auth';
-import { useStorage } from '@/store/storage';
-
-if (Platform.OS === 'android') {
-  UIManager.setLayoutAnimationEnabledExperimental?.(true);
-}
+import { useStorage, type StorageItem } from '@/store/storage';
 
 type ItemType = 'ticket' | 'receipt' | 'barcode' | 'other';
 
@@ -51,19 +46,36 @@ const TYPES: { value: ItemType; label: string }[] = [
 ];
 
 export default function StorageAddScreen() {
+  const { id, shared } = useLocalSearchParams<{ id?: string; shared?: string }>();
+  const { ready, getStorageItem } = useStorage();
+
+  if (id && !ready) return null;
+
+  const existing = id ? getStorageItem(id) : undefined;
+  return <StorageForm key={existing?.id ?? 'new'} existing={existing} shared={shared} />;
+}
+
+function StorageForm({
+  existing,
+  shared,
+}: {
+  existing?: StorageItem;
+  shared?: string;
+}) {
   const theme = useTheme();
   const router = useRouter();
-  const { addStorageItem } = useStorage();
+  const { addStorageItem, updateStorageItem } = useStorage();
   const { getIdToken } = useAuth();
 
-  const [name, setName] = useState('');
-  const [type, setType] = useState<ItemType>('ticket');
-  const [notes, setNotes] = useState('');
-  const [barcodePayload, setBarcodePayload] = useState('');
-  const [barcodeFormat, setBarcodeFormat] = useState<'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER'>('CODE_128');
-  const [expiresAt, setExpiresAt] = useState('');
-  const { shared } = useLocalSearchParams<{ shared?: string }>();
-  const [photoUris, setPhotoUris] = useState<string[]>([]);
+  const [name, setName] = useState(existing?.name ?? '');
+  const [type, setType] = useState<ItemType>(existing?.type ?? 'ticket');
+  const [notes, setNotes] = useState(existing?.notes ?? '');
+  const [barcodePayload, setBarcodePayload] = useState(existing?.barcodePayload ?? '');
+  const [barcodeFormat, setBarcodeFormat] = useState<'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER'>(
+    existing?.barcodeFormat ?? 'CODE_128',
+  );
+  const [expiresAt, setExpiresAt] = useState(existing?.expiresAt ?? '');
+  const [photoUris, setPhotoUris] = useState<string[]>(existing?.photoUris ?? []);
   const [saving, setSaving] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -72,46 +84,22 @@ export default function StorageAddScreen() {
   const canSave = name.trim().length > 0 && !saving && !analyzing;
 
   async function analyzePhotoWithAi(uri: string) {
+    if (!uri || isPdf(uri)) return;
     setAnalyzing(true);
-    let detectedBarcode = '';
-    let detectedFormat: 'QR_CODE' | 'CODE_128' | 'EAN_13' | 'CODE_39' | 'PDF417' | 'OTHER' = 'CODE_128';
 
-    // 1. High-accuracy On-device MLKit Barcode & QR Decoder (Instant & 100% Offline)
-    try {
-      const barcodes = await BarcodeScanning.scan(uri);
-      if (barcodes && barcodes.length > 0) {
-        const first = barcodes[0];
-        detectedBarcode = first.value || '';
-        if (first.format === BarcodeFormat.QR_CODE) detectedFormat = 'QR_CODE';
-        else if (first.format === BarcodeFormat.CODE_128) detectedFormat = 'CODE_128';
-        else if (first.format === BarcodeFormat.EAN_13) detectedFormat = 'EAN_13';
-        else if (first.format === BarcodeFormat.CODE_39) detectedFormat = 'CODE_39';
-        else if (first.format === BarcodeFormat.PDF417) detectedFormat = 'PDF417';
-        else detectedFormat = 'OTHER';
-
-        if (detectedBarcode) {
-          setBarcodePayload(detectedBarcode);
-          setBarcodeFormat(detectedFormat);
-        }
-      }
-    } catch (barcodeErr) {
-      console.log('On-device barcode scan info:', barcodeErr);
-    }
-
-    // 2. Gemini Cloud AI for Ticket Title, Expiry & Document Metadata
     try {
       const token = await getIdToken();
       if (token) {
         const outcome = await scanStorageViaApi(token, uri);
         if (outcome.ok && outcome.scan) {
           const { scan } = outcome;
-          if (scan.name) setName(scan.name);
+          if (scan.name && !name.trim()) setName(scan.name);
           if (scan.type) setType(scan.type);
-          if (!detectedBarcode && scan.barcodePayload) {
+          if (scan.barcodePayload && !barcodePayload.trim()) {
             setBarcodePayload(scan.barcodePayload);
             if (scan.barcodeFormat) setBarcodeFormat(scan.barcodeFormat);
           }
-          if (scan.expiresAt) setExpiresAt(scan.expiresAt);
+          if (scan.expiresAt && !expiresAt.trim()) setExpiresAt(scan.expiresAt);
           if (scan.notes) {
             setNotes((current) => (current ? `${current}\n${scan.notes}` : scan.notes || ''));
           }
@@ -128,11 +116,6 @@ export default function StorageAddScreen() {
     }
   }
 
-  /**
-   * Same contract as the warranty add screen: a shared file is attached once.
-   * acceptPhoto runs the on-device barcode decode and a cloud scan, so a repeat
-   * would cost a request and duplicate the attachment.
-   */
   const sharedHandled = useRef(false);
   useEffect(() => {
     if (!shared || sharedHandled.current) return;
@@ -141,10 +124,18 @@ export default function StorageAddScreen() {
   }, [shared]);
 
   function acceptPhoto(uri: string) {
-    const stored = persistPhoto(uri);
-    setPhotoUris((current) => [...current, stored]);
-    // Automatically analyze with MLKit + AI
-    void analyzePhotoWithAi(stored);
+    try {
+      const stored = persistPhoto(uri);
+      if (isPdf(stored)) {
+        setPdfUri(stored);
+        setPhotoUris((current) => [...current, stored]);
+      } else {
+        setPhotoUris((current) => [...current, stored]);
+        void analyzePhotoWithAi(stored);
+      }
+    } catch (e) {
+      console.warn('Failed to accept photo:', e);
+    }
   }
 
   async function takePhoto() {
@@ -173,11 +164,8 @@ export default function StorageAddScreen() {
     }
   }
 
-  async function handleAttach() {
+  async function pickFromLibrary() {
     try {
-      if (Platform.OS === 'ios') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsMultipleSelection: true,
@@ -194,6 +182,27 @@ export default function StorageAddScreen() {
     }
   }
 
+  function choosePhotoSource() {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Cancel', 'Take photo', 'Choose from library'],
+          cancelButtonIndex: 0,
+        },
+        (index) => {
+          if (index === 1) takePhoto();
+          if (index === 2) void pickFromLibrary();
+        },
+      );
+      return;
+    }
+    Alert.alert('Add ticket or card', undefined, [
+      { text: 'Take photo', onPress: () => takePhoto() },
+      { text: 'Choose from library', onPress: () => void pickFromLibrary() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }
+
   function handleRemovePhoto(index: number) {
     const target = photoUris[index];
     if (target) {
@@ -208,15 +217,27 @@ export default function StorageAddScreen() {
     if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
     try {
-      await addStorageItem({
-        name: name.trim(),
-        type,
-        photoUris,
-        notes: notes.trim() || undefined,
-        barcodePayload: barcodePayload.trim() || undefined,
-        barcodeFormat: barcodePayload.trim() ? barcodeFormat : undefined,
-        expiresAt: expiresAt.trim() || undefined,
-      });
+      if (existing) {
+        await updateStorageItem(existing.id, {
+          name: name.trim(),
+          type,
+          photoUris,
+          notes: notes.trim() || undefined,
+          barcodePayload: barcodePayload.trim() || undefined,
+          barcodeFormat: barcodePayload.trim() ? barcodeFormat : undefined,
+          expiresAt: expiresAt.trim() || undefined,
+        });
+      } else {
+        await addStorageItem({
+          name: name.trim(),
+          type,
+          photoUris,
+          notes: notes.trim() || undefined,
+          barcodePayload: barcodePayload.trim() || undefined,
+          barcodeFormat: barcodePayload.trim() ? barcodeFormat : undefined,
+          expiresAt: expiresAt.trim() || undefined,
+        });
+      }
       router.back();
     } catch (error) {
       Alert.alert('Could not save', String(error));
@@ -224,309 +245,198 @@ export default function StorageAddScreen() {
     }
   }
 
-  function handleCancel() {
-    photoUris.forEach(deletePhoto);
-    router.back();
-  }
-
   const native = Platform.OS === 'ios';
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['bottom']}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardView}
-      >
-        {native ? (
-          <Stack.Screen
-            options={{
-              headerShown: true,
-              title: 'Add Stored Item',
-              headerLeft: () => <NativeHeaderText label="Cancel" onPress={handleCancel} />,
-              headerRight: () =>
-                saving ? (
-                  <ActivityIndicator size="small" color={theme.accent} />
-                ) : (
-                  <NativeHeaderText
-                    label="Save"
-                    prominent
-                    disabled={!canSave}
-                    onPress={handleSave}
-                  />
-                ),
-            }}
-          />
-        ) : (
+    <View style={[styles.screen, { backgroundColor: theme.background }]}>
+      {native ? (
+        <Stack.Screen
+          options={{
+            headerShown: true,
+            title: existing ? 'Edit Stored Item' : 'New Stored Item',
+            headerLeft: () => (
+              <NativeHeaderText label="Cancel" onPress={() => router.back()} />
+            ),
+            headerRight: () => (
+              <NativeHeaderText label="Save" prominent disabled={!canSave} onPress={handleSave} />
+            ),
+          }}
+        />
+      ) : null}
+
+      <SafeAreaView style={styles.flex} edges={native ? ['left', 'right'] : ['top', 'left', 'right']}>
+        {native ? null : (
           <ScreenBar
-            title="Add Stored Item"
-            left={<BarTextButton label="Cancel" onPress={handleCancel} />}
-            right={
-              saving ? (
-                <ActivityIndicator size="small" color={theme.accent} />
-              ) : (
-                <BarTextButton label="Save" prominent disabled={!canSave} onPress={handleSave} />
-              )
-            }
+            filled
+            title={existing ? 'Edit Stored Item' : 'New Stored Item'}
+            left={<BarTextButton label="Cancel" onPress={() => router.back()} />}
+            right={<BarTextButton label="Save" prominent disabled={!canSave} onPress={handleSave} />}
           />
         )}
 
-        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          {/* AI Analyzing banner */}
-          {analyzing ? (
-            <Animated.View entering={FadeInDown.duration(Motion.standard)} style={[styles.aiBanner, { backgroundColor: theme.fill, borderColor: theme.accent }]}>
-              <ActivityIndicator size="small" color={theme.accent} />
-              <ThemedText style={[styles.aiBannerText, { color: theme.accent }]}>
-                AI is scanning ticket, barcode & expiry date…
-              </ThemedText>
-            </Animated.View>
-          ) : null}
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView
+            contentContainerStyle={styles.content}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            showsVerticalScrollIndicator={false}>
 
-          <Section header="Item details">
-            <InputRow
-              label="Name"
-              placeholder="e.g. Airport Parking ticket"
-              value={name}
-              onChangeText={setName}
-              autoFocus={photoUris.length === 0}
-            />
-          </Section>
-
-          <ThemedText type="caption" themeColor="textSecondary" style={styles.segmentedHeader}>
-            Type
-          </ThemedText>
-          <Segmented options={TYPES} value={type} onChange={setType} />
-
-          {/* Barcode & Expiry Section */}
-          <Section header="Barcode & Expiry Reminders">
-            <InputRow
-              label="Barcode/QR"
-              placeholder="Auto-detected code or paste text"
-              value={barcodePayload}
-              onChangeText={setBarcodePayload}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <InputRow
-              label="Expires At"
-              placeholder="YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-              value={expiresAt}
-              onChangeText={setExpiresAt}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-          </Section>
-
-          {/* Digital Code Preview */}
-          {barcodePayload.trim().length > 0 ? (
-            <View style={styles.codePreviewWrapper}>
-              <DigitalCode payload={barcodePayload} format={barcodeFormat} label={name || 'Barcode'} />
-            </View>
-          ) : null}
-
-          <Section header="Notes & details">
-            <InputRow
-              label="Notes"
-              placeholder="Zone, seat, or parking space info"
-              value={notes}
-              onChangeText={setNotes}
-              multiline
-            />
-          </Section>
-
-          <View style={styles.photoContainer}>
-            <PdfViewer uri={pdfUri} visible={pdfUri !== null} onClose={() => setPdfUri(null)} />
-
-            <PhotoViewer
-              uris={photoUris.filter((uri) => !isPdf(uri))}
-              initialIndex={viewerIndex ?? 0}
-              visible={viewerIndex !== null}
-              onClose={() => setViewerIndex(null)}
-            />
-
-            <View style={styles.photoLabelRow}>
-              <ThemedText type="caption" themeColor="textSecondary">
-                Photos & Tickets ({photoUris.length})
-              </ThemedText>
-            </View>
-
-            <View style={styles.pickerButtons}>
-              <Pressable
-                onPress={takePhoto}
-                style={({ pressed }) => [
-                  styles.pickerButton,
-                  {
-                    backgroundColor: theme.card,
-                    borderColor: theme.separator,
-                    opacity: pressed ? 0.8 : 1,
-                  },
-                ]}
-              >
-                <Ionicons name="camera-outline" size={22} color={theme.accent} />
-                <ThemedText type="footnote" style={{ color: theme.accent, fontWeight: '500' }}>
-                  Camera & AI Scan
+            {analyzing ? (
+              <Animated.View
+                entering={FadeInDown.duration(Motion.standard)}
+                style={[styles.aiBanner, { backgroundColor: theme.fill, borderColor: theme.accent }]}>
+                <ActivityIndicator size="small" color={theme.accent} />
+                <ThemedText style={[styles.aiBannerText, { color: theme.accent }]}>
+                  AI is scanning ticket, barcode & expiry date…
                 </ThemedText>
-              </Pressable>
+              </Animated.View>
+            ) : null}
 
-              <Pressable
-                onPress={handleAttach}
-                style={({ pressed }) => [
-                  styles.pickerButton,
-                  {
-                    backgroundColor: theme.card,
-                    borderColor: theme.separator,
-                    opacity: pressed ? 0.8 : 1,
-                  },
-                ]}
-              >
-                <Ionicons name="images-outline" size={22} color={theme.accent} />
-                <ThemedText type="footnote" style={{ color: theme.accent, fontWeight: '500' }}>
-                  Photos
-                </ThemedText>
-              </Pressable>
-            </View>
+            <Section>
+              <Row
+                title={photoUris.length > 0 ? 'Add another photo' : 'Photograph ticket or pass'}
+                subtitle={
+                  photoUris.length > 0
+                    ? undefined
+                    : 'Covered auto-detects titles, barcodes and expiry dates'
+                }
+                icon="camera-outline"
+                onPress={choosePhotoSource}
+              />
+            </Section>
 
             {photoUris.length > 0 ? (
-              <View style={styles.thumbnailActionSection}>
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.thumbnailList}
-                >
+              <View style={styles.thumbnailSection}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.thumbnailList}>
                   {photoUris.map((uri, index) => (
                     <Pressable
                       key={uri}
                       onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
-                      style={styles.thumbnailWrapper}
-                    >
+                      style={styles.thumbnailWrapper}>
                       <Animated.View entering={FadeInDown.duration(Motion.standard)}>
                         {isPdf(uri) ? (
                           <View style={[styles.thumbnail, styles.pdfThumbnail, { backgroundColor: theme.fill }]}>
                             <Ionicons name="document-text" size={26} color={theme.accent} />
                           </View>
                         ) : (
-                          <Image
-                            source={{ uri }}
-                            style={styles.thumbnail}
-                            contentFit="cover"
-                            recyclingKey={uri}
-                          />
+                          <Image source={{ uri }} style={styles.thumbnail} contentFit="cover" recyclingKey={uri} />
                         )}
                       </Animated.View>
-                      <Pressable
-                        onPress={() => handleRemovePhoto(index)}
-                        style={[styles.thumbnailDelete, { backgroundColor: theme.danger }]}
-                      >
+                      <Pressable onPress={() => handleRemovePhoto(index)} style={[styles.thumbnailDelete, { backgroundColor: theme.danger }]}>
                         <Ionicons name="close" size={12} color="#fff" />
                       </Pressable>
                     </Pressable>
                   ))}
                 </ScrollView>
-
-                <Pressable
-                  onPress={() => analyzePhotoWithAi(photoUris[0])}
-                  disabled={analyzing}
-                  style={({ pressed }) => [
-                    styles.rescanButton,
-                    {
-                      backgroundColor: theme.fill,
-                      borderColor: theme.accent,
-                      opacity: pressed || analyzing ? 0.7 : 1,
-                    },
-                  ]}
-                >
-                  {analyzing ? (
-                    <ActivityIndicator size="small" color={theme.accent} />
-                  ) : (
-                    <Ionicons name="sparkles" size={16} color={theme.accent} />
-                  )}
-                  <ThemedText style={[styles.rescanText, { color: theme.accent }]}>
-                    {analyzing ? 'AI Scanning…' : 'Re-scan with AI'}
-                  </ThemedText>
-                </Pressable>
               </View>
             ) : null}
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+
+            <Section header="Item details">
+              <InputRow
+                label="Name"
+                placeholder="e.g. Boarding Pass, Gym Card, Ticket"
+                value={name}
+                onChangeText={setName}
+                autoFocus={photoUris.length === 0 && !existing}
+              />
+            </Section>
+
+            <ThemedText type="caption" themeColor="textSecondary" style={styles.segmentedHeader}>
+              Type
+            </ThemedText>
+            <Segmented options={TYPES} value={type} onChange={setType} />
+
+            <Section header="Barcode & Expiry">
+              <InputRow
+                label="Code / QR"
+                placeholder="Barcode data or link"
+                value={barcodePayload}
+                onChangeText={setBarcodePayload}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <InputRow
+                label="Expires At"
+                placeholder="YYYY-MM-DD or YYYY-MM-DDTHH:MM"
+                value={expiresAt}
+                onChangeText={setExpiresAt}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </Section>
+
+            {barcodePayload.trim().length > 0 ? (
+              <View style={styles.codePreviewWrapper}>
+                <DigitalCode payload={barcodePayload} format={barcodeFormat} label={name || 'Barcode'} />
+              </View>
+            ) : null}
+
+            <Section header="Notes">
+              <InputRow
+                label="Notes"
+                placeholder="Zone, seat, or parking space info"
+                value={notes}
+                onChangeText={setNotes}
+                multiline
+              />
+            </Section>
+
+            <PdfViewer uri={pdfUri} visible={pdfUri !== null} onClose={() => setPdfUri(null)} />
+            <PhotoViewer
+              uris={photoUris.filter((uri) => !isPdf(uri))}
+              initialIndex={viewerIndex ?? 0}
+              visible={viewerIndex !== null}
+              onClose={() => setViewerIndex(null)}
+            />
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
+  screen: { flex: 1 },
+  flex: { flex: 1 },
+  content: {
+    paddingBottom: Spacing.six,
+    gap: Spacing.three,
   },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingVertical: Spacing.three,
-    paddingBottom: Spacing.six * 2,
+  segmentedHeader: {
+    paddingHorizontal: ListMetrics.horizontalInset,
+    marginTop: Spacing.two,
   },
   aiBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
     marginHorizontal: ListMetrics.horizontalInset,
-    marginBottom: Spacing.three,
+    marginTop: Spacing.two,
     padding: Spacing.three,
     borderRadius: Radius.md,
     borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
   },
   aiBannerText: {
     fontSize: 13,
     fontWeight: '600',
-  },
-  codePreviewWrapper: {
-    marginHorizontal: ListMetrics.horizontalInset,
-    marginBottom: Spacing.two,
-  },
-  segmentedHeader: {
-    marginHorizontal: ListMetrics.horizontalInset,
-    marginBottom: Spacing.one + 2,
-    textTransform: 'uppercase',
-  },
-  photoContainer: {
-    marginHorizontal: ListMetrics.horizontalInset,
-    marginTop: Spacing.four,
-  },
-  photoLabelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: Spacing.two,
-    textTransform: 'uppercase',
-  },
-  pickerButtons: {
-    flexDirection: 'row',
-    gap: Spacing.two,
-    marginBottom: Spacing.three,
-  },
-  pickerButton: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.one,
-    paddingVertical: Spacing.three,
-    borderRadius: Radius.sm,
-    borderWidth: StyleSheet.hairlineWidth,
+  },
+  thumbnailSection: {
+    paddingHorizontal: ListMetrics.horizontalInset,
   },
   thumbnailList: {
     gap: Spacing.two,
     paddingVertical: Spacing.one,
   },
   thumbnailWrapper: {
-    width: 72,
-    height: 72,
-    borderRadius: Radius.sm,
-    overflow: 'hidden',
     position: 'relative',
   },
   thumbnail: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
+    width: 68,
+    height: 68,
+    borderRadius: Radius.md,
   },
   pdfThumbnail: {
     alignItems: 'center',
@@ -534,30 +444,15 @@ const styles = StyleSheet.create({
   },
   thumbnailDelete: {
     position: 'absolute',
-    top: 4,
-    right: 4,
+    top: -4,
+    right: -4,
     width: 20,
     height: 20,
-    borderRadius: 10,
+    borderRadius: Radius.pill,
     alignItems: 'center',
     justifyContent: 'center',
-    boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
   },
-  thumbnailActionSection: {
-    gap: Spacing.two,
-  },
-  rescanButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.two,
-    paddingVertical: Spacing.two + 2,
-    borderRadius: Radius.sm,
-    borderWidth: 1,
-    marginTop: Spacing.one,
-  },
-  rescanText: {
-    fontSize: 14,
-    fontWeight: '600',
+  codePreviewWrapper: {
+    paddingHorizontal: ListMetrics.horizontalInset,
   },
 });

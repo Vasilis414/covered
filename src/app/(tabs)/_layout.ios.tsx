@@ -31,7 +31,7 @@ export default function TabsLayoutIOS() {
          */
         minimizeBehavior="onScrollDown">
         <NativeTabs.Trigger name="(items)">
-          <NativeTabs.Trigger.Label>Items</NativeTabs.Trigger.Label>
+          <NativeTabs.Trigger.Label>Warranties</NativeTabs.Trigger.Label>
           <NativeTabs.Trigger.Icon sf={{ default: 'square.stack', selected: 'square.stack.fill' }} />
         </NativeTabs.Trigger>
 

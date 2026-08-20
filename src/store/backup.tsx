@@ -79,7 +79,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
   const { storageItems, ready: storageReady, mergeStorageItems } = useStorage();
   const { entitlement, getAccessToken, getIdToken, signedIn, authProvider, refresh, signIn, signInWithPlenum } =
     useAuth();
-  const { googleBackupDestination } = useSettings();
+  const { googleBackupDestination, setGoogleBackupDestination } = useSettings();
 
   const [lastBackupAt, setLastBackupAt] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'running' | 'error'>('idle');
@@ -122,11 +122,30 @@ export function BackupProvider({ children }: { children: ReactNode }) {
       // Nothing changed since the last upload, so don't spend the round trip.
       if (reason === 'auto' && payload === lastPayload.current) return;
 
-      const token = useCloud ? getIdToken() : await getAccessToken();
+      /**
+       * No Drive permission is not a dead end — it is a different destination.
+       *
+       * Signing in without granting the Drive scope leaves getAccessToken with
+       * nothing to return, and the backup simply failed with an error telling
+       * people to sign in again. Falling back to Covered's own storage keeps
+       * their data safe by default; re-granting Drive needs a fresh consent
+       * screen, which only a full sign-out and sign-in will show.
+       */
+      let token = useCloud ? getIdToken() : await getAccessToken();
+      if (!useCloud && !token) {
+        setGoogleBackupDestination('cloud');
+        token = getIdToken();
+        if (reason === 'manual') {
+          setMessage(
+            "Backing up to Covered's storage — this app doesn't have permission for your Google Drive. To use Drive instead, sign out and sign in again, allowing Drive access.",
+          );
+        }
+      }
+
       if (!token) {
         if (reason === 'manual') {
           setStatus('error');
-          setMessage('Could not reach your backup. Open Settings and sign in again to restore access to Drive.');
+          setMessage('Could not reach your backup. Open Settings and sign in again.');
         }
         return;
       }
@@ -280,7 +299,7 @@ export function BackupProvider({ children }: { children: ReactNode }) {
         running.current = false;
       }
     },
-    [premium, items, storageItems, useCloud, getIdToken, getAccessToken, persist, refresh, entitlement?.email],
+    [premium, items, storageItems, useCloud, getIdToken, getAccessToken, persist, refresh, entitlement?.email, setGoogleBackupDestination],
   );
 
   // Auto-backup: debounce so a burst of edits produces one upload.

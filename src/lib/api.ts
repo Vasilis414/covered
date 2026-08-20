@@ -16,6 +16,8 @@ export const API_BASE =
 const TIMEOUT_MS = 30_000;
 
 export type Entitlement = {
+  /** Stable per-account id from the server; used as the RevenueCat app user id. */
+  userId?: string;
   plan: string;
   paid: boolean;
   expiresAt: string | null;
@@ -25,6 +27,8 @@ export type Entitlement = {
   storageUsed?: number;
   storageLimit?: number;
   email?: string | null;
+  /** Set locally after a delete so the UI stops offering paid features. */
+  accountDeleted?: boolean;
 };
 
 export type ScanOutcome =
@@ -52,6 +56,36 @@ async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise
 export type EntitlementResult =
   | { ok: true; entitlement: Entitlement }
   | { ok: false; reason: 'auth' | 'network' };
+
+/**
+ * Claims the caller's store subscription for their account.
+ *
+ * One paid subscription entitles one account. The server holds the binding, so
+ * restoring a purchase while signed into a different account is refused here
+ * rather than quietly giving a second account Pro.
+ */
+export type LinkSubscriptionResult =
+  | { ok: true; expiresAt: string | null }
+  | { ok: false; reason: 'already_linked' | 'no_subscription' | 'network' };
+
+export async function linkSubscription(idToken: string): Promise<LinkSubscriptionResult> {
+  try {
+    return await withTimeout(async (signal) => {
+      const response = await fetch(`${API_BASE}/subscription/link`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${idToken}` },
+        signal,
+      });
+      if (response.status === 409) return { ok: false, reason: 'already_linked' } as const;
+      if (response.status === 404) return { ok: false, reason: 'no_subscription' } as const;
+      if (!response.ok) return { ok: false, reason: 'network' } as const;
+      const body = (await response.json()) as { expiresAt?: string | null };
+      return { ok: true, expiresAt: body.expiresAt ?? null } as const;
+    });
+  } catch {
+    return { ok: false, reason: 'network' };
+  }
+}
 
 export async function fetchEntitlement(idToken: string): Promise<EntitlementResult> {
   try {

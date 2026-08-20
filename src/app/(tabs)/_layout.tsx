@@ -68,7 +68,7 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="(items)"
         options={{
-          title: 'Items',
+          title: 'Warranties',
           tabBarIcon: ({ color, size, focused }) => (
             <TabIcon name="albums" size={size} color={color} focused={focused} />
           ),

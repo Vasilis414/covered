@@ -164,7 +164,7 @@ export default function ItemsScreen() {
       <>
         <Stack.Screen
           options={{
-            title: 'Items',
+            title: 'Warranties',
             headerRight: () => (
               <NativeHeaderAction
                 symbol="plus"
@@ -193,7 +193,7 @@ export default function ItemsScreen() {
 
   return (
     <LargeTitleScreen
-      title="Items"
+      title="Warranties"
       actionIcon="add"
       actionLabel="Add item"
       onActionPress={() => router.push('/add')}

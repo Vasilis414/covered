@@ -8,11 +8,23 @@
     "scheme": "covered",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "com.plenum.covered.app",
-      "supportsTablet": true
+      "bundleIdentifier": "gr.plenum.covered-app",
+      "supportsTablet": true,
+      "infoPlist": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "covered",
+              "com.plenum.covered.app",
+              "com.googleusercontent.apps.1001340597486-tp514u7qv82a06472643b1il7b8j6biv"
+            ]
+          }
+        ]
+      },
+      "buildNumber": "2"
     },
     "android": {
-      "package": "com.plenum.covered.app",
+      "package": "gr.plenum.coveredapp",
       "adaptiveIcon": {
         "backgroundColor": "#150F36",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
@@ -65,14 +77,15 @@
         "expo-share-intent",
         {
           "iosActivationRules": {
-            "NSExtensionActivationSupportsImageWithMaxCount": 1,
-            "NSExtensionActivationSupportsFileWithMaxCount": 1
+            "NSExtensionActivationSupportsImageWithMaxCount": 10,
+            "NSExtensionActivationSupportsFileWithMaxCount": 10
           },
           "androidIntentFilters": [
             "image/*",
             "application/pdf"
           ],
-          "disableAndroidLegacyFilters": true
+          "disableAndroidLegacyFilters": true,
+          "iosAppGroupIdentifier": "group.gr.plenum.covered"
         }
       ]
     ],

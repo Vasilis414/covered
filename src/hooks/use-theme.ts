@@ -26,12 +26,23 @@ export function useResolvedScheme(): 'light' | 'dark' {
 
 export function useTheme() {
   const scheme = useResolvedScheme();
+  const system = useColorScheme();
   const { accent } = useSettings();
 
   return useMemo(() => {
     const tint = Accents[accent] ?? Accents.blue;
     const hex = Colors[scheme];
-    const ios = Platform.OS === 'ios';
+    /**
+     * The iOS semantic colours only apply while the app agrees with the OS.
+     *
+     * `Color.ios.*` are dynamic colours: UIKit resolves them from the device's
+     * appearance when they are drawn, ignoring `scheme` entirely. Applying them
+     * to someone who has overridden Appearance in Settings repainted the whole
+     * app in the OS's scheme instead of their choice, which read as the Light
+     * setting doing nothing on a dark phone. When the two disagree we fall back
+     * to the static palette, which honours the override.
+     */
+    const ios = Platform.OS === 'ios' && scheme === (system === 'dark' ? 'dark' : 'light');
     return {
       ...hex,
       ...(ios
@@ -53,5 +64,5 @@ export function useTheme() {
       accent: (scheme === 'dark' ? tint.dark : tint.light) as ColorValue,
       accentSoft: (scheme === 'dark' ? tint.softDark : tint.softLight) as ColorValue,
     };
-  }, [scheme, accent]);
+  }, [scheme, system, accent]);
 }

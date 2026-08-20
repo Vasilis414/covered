@@ -24,92 +24,101 @@ const CODE128_PATTERNS: string[] = [
 ];
 
 function encodeCode128B(text: string): boolean[] {
-  const codes: number[] = [104]; // START B
-  let checkSum = 104;
+  try {
+    if (!text || typeof text !== 'string') return [];
+    const codes: number[] = [104]; // START B
+    let checkSum = 104;
 
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i) - 32;
-    if (code >= 0 && code <= 95) {
-      codes.push(code);
-      checkSum += code * (i + 1);
-    }
-  }
-
-  codes.push(checkSum % 103);
-  codes.push(106); // STOP
-
-  const bits: boolean[] = [];
-  // Quiet zone
-  for (let q = 0; q < 10; q++) bits.push(false);
-
-  for (const c of codes) {
-    const pattern = CODE128_PATTERNS[c] || '212222';
-    let isBar = true;
-    for (let j = 0; j < pattern.length; j++) {
-      const width = parseInt(pattern[j], 10);
-      for (let w = 0; w < width; w++) {
-        bits.push(isBar);
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i) - 32;
+      if (code >= 0 && code <= 95) {
+        codes.push(code);
+        checkSum += code * (i + 1);
       }
-      isBar = !isBar;
     }
+
+    codes.push(Math.max(0, checkSum % 103));
+    codes.push(106); // STOP
+
+    const bits: boolean[] = [];
+    for (let q = 0; q < 10; q++) bits.push(false);
+
+    for (const c of codes) {
+      const pattern = CODE128_PATTERNS[c] || '212222';
+      let isBar = true;
+      for (let j = 0; j < (pattern?.length ?? 0); j++) {
+        const width = parseInt(pattern[j], 10) || 1;
+        for (let w = 0; w < width; w++) {
+          bits.push(isBar);
+        }
+        isBar = !isBar;
+      }
+    }
+
+    for (let q = 0; q < 10; q++) bits.push(false);
+    return bits;
+  } catch (err) {
+    console.warn('Failed to encode barcode:', err);
+    return [];
   }
-
-  // Quiet zone
-  for (let q = 0; q < 10; q++) bits.push(false);
-
-  return bits;
 }
 
 // ─── QR Code Matrix Generator (Compact ISO Spec) ────────────────────────────
 
 function generateQrMatrix(text: string): boolean[][] {
-  // 21x21 minimal matrix (Version 1 QR) with standard finder patterns
-  const size = 25;
-  const matrix: (boolean | null)[][] = Array(size).fill(null).map(() => Array(size).fill(null));
+  try {
+    if (!text || typeof text !== 'string') return [];
+    const size = 25;
+    const matrix: (boolean | null)[][] = Array(size)
+      .fill(null)
+      .map(() => Array(size).fill(null));
 
-  function addFinder(r0: number, c0: number) {
-    for (let r = 0; r < 7; r++) {
-      for (let c = 0; c < 7; c++) {
-        const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
-        const isCenter = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-        matrix[r0 + r][c0 + c] = isBorder || isCenter;
+    function addFinder(r0: number, c0: number) {
+      for (let r = 0; r < 7; r++) {
+        for (let c = 0; c < 7; c++) {
+          const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
+          const isCenter = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+          if (r0 + r < size && c0 + c < size) {
+            matrix[r0 + r][c0 + c] = isBorder || isCenter;
+          }
+        }
+      }
+      for (let i = 0; i < 8; i++) {
+        if (r0 + 7 < size && c0 + i < size) matrix[r0 + 7][c0 + i] = false;
+        if (r0 + i < size && c0 + 7 < size) matrix[r0 + i][c0 + 7] = false;
+        if (r0 - 1 >= 0 && c0 + i < size) matrix[r0 - 1][c0 + i] = false;
+        if (r0 + i < size && c0 - 1 >= 0) matrix[r0 + i][c0 - 1] = false;
       }
     }
-    // Separator border
-    for (let i = 0; i < 8; i++) {
-      if (r0 + 7 < size && c0 + i < size) matrix[r0 + 7][c0 + i] = false;
-      if (r0 + i < size && c0 + 7 < size) matrix[r0 + i][c0 + 7] = false;
-      if (r0 - 1 >= 0 && c0 + i < size) matrix[r0 - 1][c0 + i] = false;
-      if (r0 + i < size && c0 - 1 >= 0) matrix[r0 + i][c0 - 1] = false;
+
+    addFinder(0, 0);
+    addFinder(0, size - 7);
+    addFinder(size - 7, 0);
+
+    for (let i = 8; i < size - 8; i++) {
+      matrix[6][i] = i % 2 === 0;
+      matrix[i][6] = i % 2 === 0;
     }
-  }
 
-  addFinder(0, 0);
-  addFinder(0, size - 7);
-  addFinder(size - 7, 0);
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+    }
 
-  // Timing patterns
-  for (let i = 8; i < size - 8; i++) {
-    matrix[6][i] = i % 2 === 0;
-    matrix[i][6] = i % 2 === 0;
-  }
-
-  // Hash-seeded data distribution for visual clarity & scannability
-  let hash = 0;
-  for (let i = 0; i < text.length; i++) {
-    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-  }
-
-  for (let r = 0; r < size; r++) {
-    for (let c = 0; c < size; c++) {
-      if (matrix[r][c] === null) {
-        hash = (hash * 1664525 + 1013904223) >>> 0;
-        matrix[r][c] = (hash % 3) === 0 || (r + c) % 3 === 0;
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (matrix[r][c] === null) {
+          hash = (hash * 1664525 + 1013904223) >>> 0;
+          matrix[r][c] = (hash % 3) === 0 || (r + c) % 3 === 0;
+        }
       }
     }
-  }
 
-  return matrix.map((row) => row.map((val) => Boolean(val)));
+    return matrix.map((row) => row.map((val) => Boolean(val)));
+  } catch (err) {
+    console.warn('Failed to generate QR matrix:', err);
+    return [];
+  }
 }
 
 // ─── Component Props ────────────────────────────────────────────────────────

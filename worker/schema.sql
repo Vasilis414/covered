@@ -12,8 +12,25 @@ CREATE TABLE IF NOT EXISTS entitlements (
   plan TEXT NOT NULL DEFAULT 'free',
   expires_at TEXT,
   play_token TEXT,
+  -- Which store the subscription came from: 'apple' or 'google'.
+  store TEXT,
+  -- The store's stable id for the subscription itself, not one payment:
+  -- Apple's original_transaction_id, Play's purchase token. Survives renewals.
+  store_subscription_id TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+/**
+ * One subscription, one account.
+ *
+ * The uniqueness is the whole enforcement mechanism: a receipt already bound
+ * to someone else cannot be bound again, so restoring a purchase under a
+ * second account is refused rather than silently granting two accounts Pro.
+ * Partial, because free accounts all have NULL here and NULLs must not collide.
+ */
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entitlements_store_subscription
+  ON entitlements(store_subscription_id)
+  WHERE store_subscription_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS usage (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

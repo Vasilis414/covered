@@ -10,7 +10,7 @@ import { DestinationChooser } from '@/components/destination-chooser';
  * which is the case until the iOS share extension can be signed (App Groups
  * need a paid Apple Developer account).
  */
-type ShareIntentHook = () => {
+type ShareIntentHook = (options?: { scheme?: string; resetOnBackground?: boolean }) => {
   hasShareIntent: boolean;
   shareIntent: { files: { path: string; fileName: string }[] | null } | null;
   resetShareIntent: () => void;
@@ -40,7 +40,10 @@ export function ShareIntentSheet() {
 }
 
 function ShareIntentBridge() {
-  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent!();
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntent!({
+    scheme: 'covered',
+    resetOnBackground: true,
+  });
   const path = hasShareIntent ? (shareIntent?.files?.[0]?.path ?? null) : null;
 
   return <DestinationChooser filePath={path} onClose={() => resetShareIntent()} />;

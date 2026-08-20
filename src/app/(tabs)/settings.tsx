@@ -5,11 +5,10 @@ import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Platform, Pressable, StyleSheet, Switch, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
-import { ShareFlowTester } from '@/components/share-flow-tester';
 import { UpsellSheet, type UpsellReason } from '@/components/upsell-sheet';
-import { InputRow } from '@/components/ui/input-row';
 import { LargeTitleScreen } from '@/components/ui/large-title-screen';
 import { Row, Section } from '@/components/ui/list';
+import { Segmented } from '@/components/ui/segmented';
 import { ACCENT_NAMES, Accents, ListMetrics, Radius, Spacing, type Appearance } from '@/constants/theme';
 import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 import { isAiAvailable } from '@/lib/ai-receipt';
@@ -18,10 +17,15 @@ import { useAuth } from '@/store/auth';
 import { useItems } from '@/store/items';
 import { useStorage } from '@/store/storage';
 import { useBackup } from '@/store/backup';
-import { deleteAccount, redeemCode } from '@/lib/api';
-import { Segmented } from '@/components/ui/segmented';
+import { deleteAccount } from '@/lib/api';
 import { AVAILABLE_OFFSETS, useSettings } from '@/store/settings';
 import { FREE_ITEM_LIMIT } from '@/lib/limits';
+import {
+  presentCustomerCenter,
+  restorePurchases,
+} from '@/lib/subscriptions';
+import { PaywallModal } from '@/components/paywall-modal';
+import { openPaywall } from '@/lib/open-paywall';
 
 const APPEARANCES: { value: Appearance; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { value: 'system', label: 'Match device', icon: 'contrast' },
@@ -53,8 +57,7 @@ export default function SettingsScreen() {
 
   // Tapping the version row a few times reveals the code field.
   const [upsell, setUpsell] = useState<UpsellReason>(null);
-  const [versionTaps, setVersionTaps] = useState(0);
-  const [codeDraft, setCodeDraft] = useState('');
+  const [showPaywall, setShowPaywall] = useState(false);
 
   const premium = Boolean(entitlement?.paid);
 
@@ -73,22 +76,6 @@ export default function SettingsScreen() {
     );
   }
 
-  async function submitCode() {
-    const token = getIdToken();
-    const code = codeDraft.trim();
-    if (!token || !code) return;
-    const outcome = await redeemCode(token, code);
-    if (outcome === 'ok') {
-      await refresh();
-      setCodeDraft('');
-      setVersionTaps(0);
-      Alert.alert('Premium unlocked', 'Cloud backup and unlimited scans are now enabled.');
-    } else if (outcome === 'invalid') {
-      Alert.alert('That code did not work', 'Check it and try again.');
-    } else {
-      Alert.alert('Could not reach the server', 'Try again in a moment.');
-    }
-  }
 
   /**
    * Account deletion, as both app stores require it: reachable from inside the
@@ -259,6 +246,62 @@ export default function SettingsScreen() {
         )}
       </Section>
 
+      <Section header="Subscription">
+        {premium ? (
+          <>
+            <Row
+              title="Covered Pro Active"
+              subtitle="All features and cloud limits unlocked"
+              icon="checkmark-circle"
+              iconColor="success"
+              chevron={false}
+            />
+            <Row
+              title="Customer Center"
+              subtitle="Manage plan, change tiers or billing"
+              icon="person-circle-outline"
+              iconColor="accent"
+              onPress={() => void presentCustomerCenter()}
+            />
+          </>
+        ) : (
+          <>
+            <Row
+              title="Upgrade to Covered Pro"
+              subtitle="Unlimited scans, items and cloud backup"
+              icon="sparkles"
+              iconColor="accent"
+              onPress={async () => {
+                /**
+                 * Goes through openPaywall rather than presenting directly.
+                 *
+                 * Calling presentRevenueCatPaywall here skipped that helper's
+                 * "ask first, present second" check, so an offering that fails
+                 * to load surfaced RevenueCat's own error alert instead of
+                 * dropping to PaywallModal. Its result is also a string, so
+                 * the old `if (!purchased)` guard never ran the fallback.
+                 */
+                const { needsFallback } = await openPaywall();
+                if (needsFallback) setShowPaywall(true);
+              }}
+            />
+            <Row
+              title="Restore Purchases"
+              icon="refresh"
+              iconColor="textSecondary"
+              onPress={async () => {
+                const res = await restorePurchases();
+                if (res.success) {
+                  Alert.alert('Purchases Restored', 'Your Pro subscription has been restored.');
+                } else {
+                  Alert.alert('No Active Subscriptions', 'No previous purchases were found for this Apple ID.');
+                }
+              }}
+            />
+          </>
+        )}
+      </Section>
+
       <Section
           header="Cloud backup"
           footer={
@@ -388,12 +431,6 @@ export default function SettingsScreen() {
         />
       </Section>
 
-      {/* Temporary: exercises the share flow before the OS share extension can
-          be signed. See ShareFlowTester. */}
-      <Section header="Developer" footer="The real share sheet needs a paid Apple account; this tests the rest of the flow now.">
-        <ShareFlowTester />
-      </Section>
-
       <Section
         header="About"
         footer={
@@ -407,20 +444,7 @@ export default function SettingsScreen() {
           iconColor="textSecondary"
           value={Constants.expoConfig?.version ?? '1.0.0'}
           chevron={false}
-          onPress={() => setVersionTaps((count) => count + 1)}
         />
-        {versionTaps >= 7 && !premium ? (
-          <InputRow
-            label="Code"
-            value={codeDraft}
-            onChangeText={setCodeDraft}
-            placeholder="Enter code"
-            autoCapitalize="characters"
-            autoCorrect={false}
-            returnKeyType="done"
-            onSubmitEditing={submitCode}
-          />
-        ) : null}
         <Row title="Made by" icon="cloud" iconColor="accent" value="Plenum" />
       </Section>
 
@@ -445,6 +469,7 @@ export default function SettingsScreen() {
       </Section>
 
       <UpsellSheet reason={upsell} onClose={() => setUpsell(null)} />
+      <PaywallModal visible={showPaywall} onClose={() => setShowPaywall(false)} />
 
       <View style={styles.tabInset} />
     </LargeTitleScreen>

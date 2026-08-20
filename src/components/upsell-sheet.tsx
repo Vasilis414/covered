@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { SlideInDown, useReducedMotion } from 'react-native-reanimated';
 
@@ -10,6 +10,8 @@ import { Motion } from '@/constants/motion';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/store/auth';
+import { PaywallModal } from '@/components/paywall-modal';
+import { openPaywall } from '@/lib/open-paywall';
 
 export type UpsellReason = 'items' | 'scan' | 'scan-intro' | 'magic' | 'backup' | 'signin' | null;
 
@@ -77,6 +79,8 @@ export function UpsellSheet({
    * succeeded — an upsell arriving as the reward for doing what was asked. If
    * they hit a paid limit later, that moment will ask for itself.
    */
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [pendingPaywall, setPendingPaywall] = useState(false);
   const wasSignedIn = useRef(signedIn);
   useEffect(() => {
     if (reason !== null && signedIn && !wasSignedIn.current) onClose();
@@ -87,69 +91,103 @@ export function UpsellSheet({
   const benefits = promptingSignIn ? FREE_BENEFITS : PREMIUM_BENEFITS;
 
   return (
-    /* The modal fades so the backdrop appears in place; only the card travels.
-       Sliding the whole modal dragged the dim layer up from the bottom edge
-       with it, which read as one grey panel rather than a sheet over the app. */
-    <Modal visible={reason !== null} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.root}>
-        <SheetBackdrop onPress={onClose} />
-        <Animated.View
-          entering={reduceMotion ? undefined : SlideInDown.duration(Motion.standard)}
-          style={[styles.sheet, { backgroundColor: theme.card }]}>
-        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          <View style={[styles.badge, { backgroundColor: theme.accentSoft }]}>
-            <Ionicons name="shield-checkmark" size={26} color={theme.accent} />
-          </View>
+    <>
+      <PaywallModal
+        visible={showPaywall}
+        onClose={() => {
+          setShowPaywall(false);
+          onClose();
+        }}
+      />
+      <Modal
+        visible={reason !== null && !showPaywall}
+        transparent
+        animationType="fade"
+        onRequestClose={onClose}
+        onDismiss={() => {
+          if (!pendingPaywall) return;
+          setPendingPaywall(false);
+          void openPaywall().then(({ needsFallback }) => {
+            if (needsFallback) setShowPaywall(true);
+          });
+        }}>
+        <View style={styles.root}>
+          <SheetBackdrop onPress={onClose} />
+          <Animated.View
+            entering={reduceMotion ? undefined : SlideInDown.duration(Motion.standard)}
+            style={[styles.sheet, { backgroundColor: theme.card }]}>
+          <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+            <View style={[styles.badge, { backgroundColor: theme.accentSoft }]}>
+              <Ionicons name="shield-checkmark" size={26} color={theme.accent} />
+            </View>
 
-          <ThemedText type="title3" style={styles.title}>
-            {promptingSignIn ? 'Welcome to Covered' : (copy?.title ?? 'Covered Premium')}
-          </ThemedText>
-          <ThemedText type="subhead" themeColor="textSecondary" style={styles.body}>
-            {promptingSignIn
-              ? 'Sign in to create your free account. Your items stay on this phone either way.'
-              : (copy?.body ?? '')}
-          </ThemedText>
-
-          <View style={styles.benefits}>
-            {benefits.map((benefit) => (
-              <View key={benefit.text} style={styles.benefit}>
-                <Ionicons name={benefit.icon} size={18} color={theme.success} />
-                <ThemedText type="callout" style={styles.benefitText}>
-                  {benefit.text}
-                </ThemedText>
-              </View>
-            ))}
-          </View>
-
-          {signedIn ? (
-            <>
-              <GlassButton label="Subscribe" onPress={onClose} />
-              <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
-                Subscriptions aren&apos;t open yet — have a code? Settings, then tap Version.
-              </ThemedText>
-            </>
-          ) : (
-            <>
-              <GlassButton
-                label={signingIn ? 'Opening Google…' : 'Sign in with Google'}
-                disabled={signingIn}
-                onPress={() => signIn()}
-              />
-              <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
-                Premium is a separate upgrade — unlimited scanning, unlimited items and backup.
-              </ThemedText>
-            </>
-          )}
-
-          <Pressable accessibilityRole="button" onPress={onClose} style={styles.dismiss}>
-            <ThemedText type="callout" themeColor="textSecondary">
-              {promptingSignIn ? 'Maybe later' : 'Not now'}
+            <ThemedText type="title3" style={styles.title}>
+              {promptingSignIn ? 'Welcome to Covered' : (copy?.title ?? 'Covered Premium')}
             </ThemedText>
-          </Pressable>
-          </ScrollView>
-        </Animated.View>
-      </View>
-    </Modal>
+            <ThemedText type="subhead" themeColor="textSecondary" style={styles.body}>
+              {promptingSignIn
+                ? 'Sign in to create your free account. Your items stay on this phone either way.'
+                : (copy?.body ?? '')}
+            </ThemedText>
+
+            <View style={styles.benefits}>
+              {benefits.map((benefit) => (
+                <View key={benefit.text} style={styles.benefit}>
+                  <Ionicons name={benefit.icon} size={18} color={theme.success} />
+                  <ThemedText type="callout" style={styles.benefitText}>
+                    {benefit.text}
+                  </ThemedText>
+                </View>
+              ))}
+            </View>
+
+            {signedIn ? (
+              <>
+                <GlassButton
+                  label="Subscribe"
+                  onPress={() => {
+                    /**
+                     * Present only once this sheet has actually gone.
+                     *
+                     * Closing and presenting in the same tick raced the Modal's
+                     * dismissal: iOS put the paywall on top of a modal window
+                     * that was still tearing down, and when the paywall closed
+                     * that invisible window stayed key and swallowed every
+                     * touch, leaving buttons dead until the screen was
+                     * remounted. onDismiss fires after the window is really
+                     * gone, so there is nothing left to present over.
+                     */
+                    setPendingPaywall(true);
+                    onClose();
+                  }}
+                />
+                <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
+                  Unlock unlimited AI receipt scans, items and cloud backup.
+                </ThemedText>
+              </>
+            ) : (
+              <>
+                <GlassButton
+                  label={signingIn ? 'Opening Google…' : 'Sign in with Google'}
+                  disabled={signingIn}
+                  onPress={() => signIn()}
+                />
+                <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
+                  Premium is a separate upgrade — unlimited scanning, unlimited items and backup.
+                </ThemedText>
+              </>
+            )}
+
+            <Pressable accessibilityRole="button" onPress={onClose} style={styles.dismiss}>
+              <ThemedText type="callout" themeColor="textSecondary">
+                {promptingSignIn ? 'Maybe later' : 'Not now'}
+              </ThemedText>
+            </Pressable>
+            </ScrollView>
+          </Animated.View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
