@@ -93,7 +93,17 @@ export function BackupProvider({ children }: { children: ReactNode }) {
 
   const ready = itemsReady && storageReady;
   const premium = Boolean(entitlement?.paid);
-  const useCloud = authProvider === 'plenum' || (authProvider === 'google' && googleBackupDestination === 'cloud');
+  /**
+   * Only a Google account can back up to Drive.
+   *
+   * Plenum and Apple sign-ins have no Google credential to authorise Drive
+   * with, so Covered's own storage is not a fallback for them — it is the only
+   * destination there is.
+   */
+  const useCloud =
+    authProvider === 'plenum' ||
+    authProvider === 'apple' ||
+    (authProvider === 'google' && googleBackupDestination === 'cloud');
 
   useEffect(() => {
     AsyncStorage.getItem(STATE_KEY)

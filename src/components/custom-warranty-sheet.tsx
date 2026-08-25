@@ -17,7 +17,10 @@ export type CustomWarranty =
   | { kind: 'days'; days: number };
 
 /** Days and weeks stay exact; months and years use calendar arithmetic. */
-export function toCustomWarranty(amount: number, unit: WarrantyUnit): CustomWarranty {
+export function toCustomWarranty(rawAmount: number, unit: WarrantyUnit): CustomWarranty {
+  // Coerced at the boundary: this is the last point where a stray string from
+  // a picker can still be caught before it reaches the date arithmetic.
+  const amount = Number(rawAmount) || 1;
   if (unit === 'days') return { kind: 'days', days: amount };
   if (unit === 'weeks') return { kind: 'days', days: amount * 7 };
   if (unit === 'years') return { kind: 'months', months: amount * 12 };

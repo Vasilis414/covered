@@ -94,11 +94,12 @@ export const GlassSpacing = {
 } as const;
 
 /**
- * Dark is not a preference here.
+ * Appearance is the user's choice again.
  *
- * The glass materials are designed against a dark ground; on a light one they
- * lose the depth that makes them read as glass at all, and the ambient backdrop
- * turns to mud. The app forces dark rather than offering a choice it cannot
- * honour well.
+ * The glass materials were tuned against a dark ground, so Light was pinned off
+ * rather than shipped looking wrong — but Settings kept offering the choice,
+ * which made the setting look broken instead of absent. AmbientBackdrop now
+ * draws a light ground and veil to match, so the glass has something to sample
+ * either way and the control does what it says.
  */
-export const FORCE_DARK = true;
+export const FORCE_DARK = false;

@@ -43,6 +43,15 @@ export function LargeTitleScreen({
   const insets = useSafeAreaInsets();
   const scrollY = useRef(new Animated.Value(0)).current;
 
+  /**
+   * The scroll view is inset by UIKit, so this only adds the nav bar.
+   *
+   * See the note on `contentInsetAdjustmentBehavior` below: the safe-area inset
+   * is applied outside React Native's layout, so adding `insets.top` here too
+   * is what buried the large title under a second inset's worth of space.
+   */
+  const padTop = NAV_BAR_HEIGHT + Spacing.two;
+
   const compactOpacity = scrollY.interpolate({
     inputRange: [HANDOVER_START, HANDOVER_END],
     outputRange: [0, 1],
@@ -60,17 +69,28 @@ export function LargeTitleScreen({
     extrapolateRight: 'clamp',
   });
 
+  // The compact bar is outside the scroll view, so it clears the status bar itself.
   const headerHeight = insets.top + NAV_BAR_HEIGHT;
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>
       <Animated.ScrollView
-        contentContainerStyle={{ paddingTop: headerHeight + Spacing.two }}
+        contentContainerStyle={{ paddingTop: padTop }}
         scrollEventThrottle={16}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
-        contentInsetAdjustmentBehavior="never"
+        /**
+         * UIKit owns the safe-area inset, and this view only adds the nav bar.
+         *
+         * With "never" the inset was applied anyway — layout reported content
+         * starting at 114pt while it drew ~60pt lower, so no amount of padding
+         * arithmetic could close the gap; every correction was fighting an
+         * inset React Native's layout could not see. Letting UIKit apply it
+         * once, the way the native-header Warranties tab already does, puts the
+         * large title at the same height as the system draws it.
+         */
+        contentInsetAdjustmentBehavior="automatic"
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
           useNativeDriver: true,
         })}>

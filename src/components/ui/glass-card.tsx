@@ -3,6 +3,7 @@ import { type ReactNode } from 'react';
 import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { GlassRadius, GlassSpacing } from '@/constants/design';
+import { useResolvedScheme } from '@/hooks/use-theme';
 
 /**
  * Liquid Glass needs iOS 26 and a device that supports it.
@@ -32,6 +33,10 @@ export function GlassCard({
   radius?: number;
   style?: StyleProp<ViewStyle>;
 }) {
+  // Follows the chosen appearance rather than a pinned 'dark' — the card kept
+  // sampling as if the ground were black once Light became selectable.
+  const scheme = useResolvedScheme();
+
   if (!glassSupported) {
     return (
       <View style={[styles.fallback, { borderRadius: radius }, style]}>
@@ -53,7 +58,7 @@ export function GlassCard({
       // the backdrop, higher and the card stops reading as glass.
       tintColor={tint ? `${tint}59` : undefined}
       isInteractive={interactive}
-      colorScheme="dark"
+      colorScheme={scheme}
       style={[styles.card, { borderRadius: radius }, style]}>
       {children}
     </GlassView>

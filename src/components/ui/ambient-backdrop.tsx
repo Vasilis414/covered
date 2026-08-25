@@ -9,6 +9,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useResolvedScheme } from '@/hooks/use-theme';
+
 /**
  * The ambient ground every screen floats on.
  *
@@ -24,6 +26,7 @@ import Animated, {
  */
 export function AmbientBackdrop({ tint }: { tint: string }) {
   const { width, height } = useWindowDimensions();
+  const light = useResolvedScheme() === 'light';
   const reduceMotion = useReducedMotion();
   const drift = useSharedValue(0.4);
 
@@ -45,7 +48,7 @@ export function AmbientBackdrop({ tint }: { tint: string }) {
 
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
-      <View style={[StyleSheet.absoluteFill, styles.ground]} />
+      <View style={[StyleSheet.absoluteFill, light ? styles.groundLight : styles.ground]} />
 
       {/* Screen tint, top-left — the colour that identifies this section. */}
       <View
@@ -56,7 +59,7 @@ export function AmbientBackdrop({ tint }: { tint: string }) {
             height: blobSize,
             borderRadius: blobSize / 2,
             backgroundColor: tint,
-            opacity: 0.35,
+            opacity: light ? 0.22 : 0.35,
             top: -blobSize * 0.35,
             left: -blobSize * 0.2,
           },
@@ -72,7 +75,7 @@ export function AmbientBackdrop({ tint }: { tint: string }) {
             height: blobSize * 0.8,
             borderRadius: blobSize * 0.4,
             backgroundColor: '#5856D6',
-            opacity: 0.28,
+            opacity: light ? 0.16 : 0.28,
             top: height * 0.25,
           },
           drifting,
@@ -88,7 +91,7 @@ export function AmbientBackdrop({ tint }: { tint: string }) {
             height: blobSize * 0.7,
             borderRadius: blobSize * 0.35,
             backgroundColor: '#AF52DE',
-            opacity: 0.2,
+            opacity: light ? 0.12 : 0.2,
             bottom: -blobSize * 0.2,
             left: -blobSize * 0.15,
           },
@@ -103,7 +106,7 @@ export function AmbientBackdrop({ tint }: { tint: string }) {
        * translucent dark layer produces the same recessed, hazy ground for
        * free, and the glass cards above supply the actual blur.
        */}
-      <View style={[StyleSheet.absoluteFill, styles.veil]} />
+      <View style={[StyleSheet.absoluteFill, light ? styles.veilLight : styles.veil]} />
     </View>
   );
 }
@@ -111,6 +114,9 @@ export function AmbientBackdrop({ tint }: { tint: string }) {
 const styles = StyleSheet.create({
   /** Near-black, not pure — pure black flattens the glass edges. */
   ground: { backgroundColor: '#0B0B12' },
+  /** The light counterpart: off-white, for the same reason. */
+  groundLight: { backgroundColor: '#F2F2F7' },
   blob: { position: 'absolute' },
   veil: { backgroundColor: 'rgba(11,11,18,0.55)' },
+  veilLight: { backgroundColor: 'rgba(248,248,252,0.62)' },
 });

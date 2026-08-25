@@ -1,0 +1,7 @@
+{
+  "name": "quick-look",
+  "version": "1.0.0",
+  "description": "Apple Quick Look (QLPreviewController) for photos and PDFs.",
+  "main": "index.ts",
+  "private": true
+}

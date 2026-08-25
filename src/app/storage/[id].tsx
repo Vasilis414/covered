@@ -30,6 +30,7 @@ import { Radius, Spacing, ListMetrics } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/store/auth';
 import { useStorage, type StorageItem } from '@/store/storage';
+import { openAttachment } from '@/lib/open-attachment';
 
 /** Keeps the shared filename readable and free of anything a path dislikes. */
 function safeFileName(name: string): string {
@@ -266,7 +267,11 @@ export default function StorageDetailScreen() {
               {item.photoUris.map((uri, idx) => (
                 <Pressable
                   key={uri}
-                  onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(idx))}
+                  onPress={() =>
+                    void openAttachment(item.photoUris, idx, () =>
+                      isPdf(uri) ? setPdfUri(uri) : setViewerIndex(idx),
+                    )
+                  }
                   style={({ pressed }) => [
                     styles.photoWrapper,
                     { borderColor: theme.separator, opacity: pressed ? 0.85 : 1 },

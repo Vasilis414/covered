@@ -21,15 +21,7 @@ export function useResolvedScheme(): 'light' | 'dark' {
   const system = useColorScheme();
   const { appearance } = useSettings();
 
-  /**
-   * The Plenum design language is dark-only, and not as a preference.
-   *
-   * Liquid Glass is designed to sample a dark ground; over a light one it
-   * loses the depth that makes it read as glass, and the ambient backdrop
-   * washes out to grey. Offering a Light setting we cannot render properly is
-   * worse than not offering it, so the choice is removed rather than honoured
-   * badly. See FORCE_DARK in constants/design.
-   */
+  /** Kept as an escape hatch; see the note on FORCE_DARK in constants/design. */
   if (FORCE_DARK) return 'dark';
 
   if (appearance === 'light' || appearance === 'dark') return appearance;

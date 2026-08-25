@@ -1,4 +1,5 @@
 import { verifyGoogleIdToken, type GoogleIdentity } from './google-auth';
+import { verifyAppleIdentityToken } from './apple-auth';
 import { getGcsAccessToken, uploadToGcs, downloadFromGcs, deleteFromGcs } from './gcs';
 
 /**
@@ -128,6 +129,8 @@ type Account = {
   userId: string;
   plan: string;
   expiresAt: string | null;
+  /** 'apple' or 'google' when a store purchase backs this, else null. */
+  store?: string | null;
   /** Scans attempted — the abuse ceiling. */
   scansUsed: number;
   /** Scans the user accepted as good — the real free allowance. */
@@ -156,7 +159,20 @@ function json(body: unknown, status = 200, extraHeaders: Record<string, string> 
 
 function isPaid(account: Account): boolean {
   if (account.plan === 'free') return false;
+
+  /**
+   * A store subscription without an expiry is not trusted.
+   *
+   * `!expiresAt` used to mean "never expires", which is right for a promo
+   * grant but dangerous for a purchase: if RevenueCat ever answered without an
+   * expires_date, or a webhook arrived without expiration_at_ms, the row
+   * became permanent Pro that no cancellation, refund or expiry could revoke —
+   * and it would keep unlocking the account on any device it signed into.
+   * Store-backed rows must carry a date; only a manual grant may be perpetual.
+   */
+  if (account.store && !account.expiresAt) return false;
   if (!account.expiresAt) return true;
+
   return new Date(account.expiresAt).getTime() > Date.now();
 }
 
@@ -164,6 +180,7 @@ function isPaid(account: Account): boolean {
 async function loadAccount(env: Env, identity: GoogleIdentity): Promise<Account> {
   const existing = await env.DB.prepare(
     `SELECT u.id AS userId, COALESCE(e.plan,'free') AS plan, e.expires_at AS expiresAt,
+            e.store AS store,
             COALESCE(us.ai_scans_used,0) AS scansUsed,
             COALESCE(us.ai_scans_charged,0) AS scansCharged
        FROM users u
@@ -222,6 +239,32 @@ async function authenticate(request: Request, env: Env): Promise<GoogleIdentity 
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Sign in with Apple.
+   *
+   * Namespaced like the Plenum branch, so the same person signing in with
+   * Google and with Apple stays two distinct accounts rather than colliding on
+   * a bare `sub`. Apple only returns the email on the very first authorisation
+   * and often returns a relay address, so whatever arrives here is persisted
+   * on first sight and never expected again.
+   */
+  if (token.startsWith('apple:')) {
+    const appleToken = token.slice('apple:'.length);
+    const bundleIds = (env.APPLE_BUNDLE_IDS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const identity = await verifyAppleIdentityToken(appleToken, bundleIds);
+    if (!identity) return null;
+    return {
+      sub: 'apple:' + identity.sub,
+      // A relay address is deliberately kept: it is deliverable, and it is the
+      // only address Apple will ever give for this person.
+      email: identity.email,
+      name: undefined,
+    };
   }
 
   /**
@@ -733,6 +776,18 @@ async function handleSubscriptionLink(env: Env, account: Account): Promise<Respo
   const sub = await fetchStoreSubscription(env, account.userId);
   if (!sub) return json({ error: 'no_active_subscription' }, 404);
 
+  /**
+   * Refuse to record a subscription with no end date.
+   *
+   * Writing NULL here would create a row that never expires, and because the
+   * account carries Pro to every device it signs into, that is a permanent
+   * unlock bought once. Better to fail the link and let the client retry than
+   * to grant something that cannot be taken back.
+   */
+  if (!sub.expiresAt) {
+    return json({ error: 'subscription_missing_expiry' }, 502);
+  }
+
   const owner = await ownerOfSubscription(env, sub.subscriptionId);
   if (owner && owner !== account.userId) {
     return json(
@@ -899,6 +954,17 @@ async function handleRevenueCatWebhook(request: Request, env: Env): Promise<Resp
     )
       .bind(subscriptionId, appUserId)
       .run();
+  }
+
+  /**
+   * Same rule as the link endpoint: no expiry, no grant.
+   *
+   * Answering ok stops RevenueCat retrying an event we have deliberately
+   * declined; /subscription/link will pick the subscription up with a real
+   * expiry the next time the app asks.
+   */
+  if (!expiresAt) {
+    return json({ ok: true, type, ignored: 'missing_expiry' });
   }
 
   await env.DB.prepare(

@@ -4,7 +4,7 @@ import { Platform, StyleSheet, type ViewStyle } from 'react-native';
 
 import { PressableScale } from '@/components/ui/pressable-scale';
 import { ThemedText } from '@/components/themed-text';
-import { Radius } from '@/constants/theme';
+import { ButtonMetrics, Radius } from '@/constants/theme';
 import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 
 function canUseGlass(): boolean {
@@ -35,7 +35,7 @@ export function GlassButton({
   const glass = canUseGlass();
 
   const inner: ReactNode = (
-    <ThemedText type="headline" style={{ color: glass ? theme.text : '#FFFFFF' }}>
+    <ThemedText type="headline" style={{ color: '#FFFFFF' }}>
       {label}
     </ThemedText>
   );
@@ -47,7 +47,20 @@ export function GlassButton({
         disabled={disabled}
         onPress={onPress}
         scaleTo={0.97}
-        style={[styles.frame, style, { opacity: disabled ? 0.55 : 1 }]}>
+        /**
+         * The accent fill sits underneath the glass rather than only inside its
+         * tint. `GlassView` renders clear whenever the system declines the
+         * effect — reduced transparency, low power, a stale layer after a theme
+         * change — and the button was then an invisible label on the
+         * background. With the fill behind it, glass tints the accent when it
+         * works and the plain pill shows through when it doesn't.
+         */
+        style={[
+          styles.frame,
+          { backgroundColor: theme.accent },
+          style,
+          { opacity: disabled ? 0.55 : 1 },
+        ]}>
         <GlassView
           glassEffectStyle="regular"
           isInteractive
@@ -74,15 +87,15 @@ export function GlassButton({
 const styles = StyleSheet.create({
   frame: {
     alignSelf: 'stretch',
-    height: 50,
-    borderRadius: Radius.lg,
+    height: ButtonMetrics.height,
+    borderRadius: ButtonMetrics.radius,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
   },
   glass: {
     ...StyleSheet.absoluteFill,
-    borderRadius: Radius.lg,
+    borderRadius: ButtonMetrics.radius,
     alignItems: 'center',
     justifyContent: 'center',
   },

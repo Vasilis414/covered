@@ -113,6 +113,20 @@ export const Radius = {
   pill: 999,
 } as const;
 
+/**
+ * One definition for every full-width action button.
+ *
+ * GlassButton sized itself and Apple's AppleAuthenticationButton sized itself,
+ * so a 50pt/16pt-radius button sat next to a 48pt one whose radius Apple
+ * clamped from the 999 it was handed — visibly mismatched in height and
+ * corner. Apple's control cannot be styled by stylesheet, only by these two
+ * props, so both must read the same numbers.
+ */
+export const ButtonMetrics = {
+  height: 50,
+  radius: Radius.lg,
+} as const;
+
 /** Standard iOS list metrics — rows are 44pt minimum, separators inset past the icon. */
 export const ListMetrics = {
   rowHeight: 44,

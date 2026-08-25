@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import qrcode from 'qrcode-generator';
 
 // ─── Code 128 Barcode Pattern Encoder ─────────────────────────────────────────
 
@@ -63,59 +64,41 @@ function encodeCode128B(text: string): boolean[] {
   }
 }
 
-// ─── QR Code Matrix Generator (Compact ISO Spec) ────────────────────────────
+// ─── QR Code Matrix Generator ───────────────────────────────────────────────
 
+/**
+ * Encodes a real, scannable QR code.
+ *
+ * The previous implementation drew the three finder patterns and the timing
+ * lines, then filled every data module with noise seeded by a hash of the
+ * payload. It looked convincing — right shape, plausible density — but carried
+ * no data, no Reed-Solomon correction, no format information and no mask, so a
+ * scanner found the finders, failed to read the format block and rejected it.
+ * That is not a cosmetic bug: someone holding this at a gate is turned away
+ * while the original photo in the same item would have worked.
+ *
+ * Error correction level M: the usual choice for tickets, and it survives the
+ * glare and partial obstruction of a screen being scanned at an angle.
+ */
 function generateQrMatrix(text: string): boolean[][] {
   try {
     if (!text || typeof text !== 'string') return [];
-    const size = 25;
-    const matrix: (boolean | null)[][] = Array(size)
-      .fill(null)
-      .map(() => Array(size).fill(null));
+    // Version 0 lets the library pick the smallest version that fits the data.
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
 
-    function addFinder(r0: number, c0: number) {
-      for (let r = 0; r < 7; r++) {
-        for (let c = 0; c < 7; c++) {
-          const isBorder = r === 0 || r === 6 || c === 0 || c === 6;
-          const isCenter = r >= 2 && r <= 4 && c >= 2 && c <= 4;
-          if (r0 + r < size && c0 + c < size) {
-            matrix[r0 + r][c0 + c] = isBorder || isCenter;
-          }
-        }
-      }
-      for (let i = 0; i < 8; i++) {
-        if (r0 + 7 < size && c0 + i < size) matrix[r0 + 7][c0 + i] = false;
-        if (r0 + i < size && c0 + 7 < size) matrix[r0 + i][c0 + 7] = false;
-        if (r0 - 1 >= 0 && c0 + i < size) matrix[r0 - 1][c0 + i] = false;
-        if (r0 + i < size && c0 - 1 >= 0) matrix[r0 + i][c0 - 1] = false;
-      }
+    const count = qr.getModuleCount();
+    const matrix: boolean[][] = [];
+    for (let r = 0; r < count; r += 1) {
+      const row: boolean[] = [];
+      for (let c = 0; c < count; c += 1) row.push(qr.isDark(r, c));
+      matrix.push(row);
     }
-
-    addFinder(0, 0);
-    addFinder(0, size - 7);
-    addFinder(size - 7, 0);
-
-    for (let i = 8; i < size - 8; i++) {
-      matrix[6][i] = i % 2 === 0;
-      matrix[i][6] = i % 2 === 0;
-    }
-
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) {
-      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-    }
-
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size; c++) {
-        if (matrix[r][c] === null) {
-          hash = (hash * 1664525 + 1013904223) >>> 0;
-          matrix[r][c] = (hash % 3) === 0 || (r + c) % 3 === 0;
-        }
-      }
-    }
-
-    return matrix.map((row) => row.map((val) => Boolean(val)));
+    return matrix;
   } catch (err) {
+    // Returning empty renders nothing rather than something unscannable — a
+    // missing code sends someone to their original photo; a fake one does not.
     console.warn('Failed to generate QR matrix:', err);
     return [];
   }
@@ -144,6 +127,18 @@ export function DigitalCode({ payload, format = 'CODE_128', label }: DigitalCode
     if (!isQr) return [];
     return generateQrMatrix(payload);
   }, [payload, isQr]);
+
+  /**
+   * Cell size is derived, not fixed.
+   *
+   * The module count grows with the payload — a longer ticket reference needs a
+   * higher QR version — so the old fixed 6pt/10pt cells silently overflowed
+   * their container once a code went past version 1. Dividing a target width by
+   * the actual module count keeps every version the same physical size.
+   */
+  const qrModules = qrMatrix.length || 1;
+  const cardCell = Math.max(3, Math.floor(170 / qrModules));
+  const modalCell = Math.max(5, Math.floor(280 / qrModules));
 
   return (
     <>
@@ -176,14 +171,14 @@ export function DigitalCode({ payload, format = 'CODE_128', label }: DigitalCode
         </View>
 
         {isQr ? (
-          <View style={styles.qrContainer}>
+          <View style={[styles.qrContainer, { padding: cardCell * 4 }]}>
             {qrMatrix.map((row, r) => (
               <View key={`row-${r}`} style={styles.qrRow}>
                 {row.map((active, c) => (
                   <View
                     key={`col-${c}`}
                     style={[
-                      styles.qrCell,
+                      { width: cardCell, height: cardCell },
                       { backgroundColor: active ? '#000000' : '#FFFFFF' },
                     ]}
                   />
@@ -228,14 +223,14 @@ export function DigitalCode({ payload, format = 'CODE_128', label }: DigitalCode
 
             <View style={styles.modalCodeBox}>
               {isQr ? (
-                <View style={styles.modalQrContainer}>
+                <View style={[styles.modalQrContainer, { padding: modalCell * 4 }]}>
                   {qrMatrix.map((row, r) => (
                     <View key={`modal-row-${r}`} style={styles.modalQrRow}>
                       {row.map((active, c) => (
                         <View
                           key={`modal-col-${c}`}
                           style={[
-                            styles.modalQrCell,
+                            { width: modalCell, height: modalCell },
                             { backgroundColor: active ? '#000000' : '#FFFFFF' },
                           ]}
                         />
@@ -328,8 +323,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#111827',
   },
+  /**
+   * Padding here is the QR quiet zone, not decoration.
+   *
+   * The spec asks for four clear modules on every side; without it many
+   * scanners cannot lock onto the finder patterns at all. The value is applied
+   * inline from the derived cell size so it scales with the code.
+   */
   qrContainer: {
-    padding: Spacing.two,
     backgroundColor: '#FFFFFF',
   },
   qrRow: {

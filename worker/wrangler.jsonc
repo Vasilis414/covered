@@ -28,7 +28,10 @@
     "GEMINI_MODEL": "gemini-3.5-flash-lite",
     // Scans a free account gets, ever. Paid accounts are unlimited.
     "FREE_SCAN_LIMIT": "1",
-    "GCS_BUCKET_NAME": "covered_databucket"
+    "GCS_BUCKET_NAME": "covered_databucket",
+    // Bundle ids accepted as the `aud` of a Sign in with Apple token. Not a
+    // secret — it is the same identifier the app ships with.
+    "APPLE_BUNDLE_IDS": "gr.plenum.covered-app"
   }
 
   // GEMINI_API_KEY is a secret: wrangler secret put GEMINI_API_KEY

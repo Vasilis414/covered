@@ -47,6 +47,10 @@ import type { ReceiptLineItem, ReceiptScan } from '@/lib/receipt-parse';
 import { expiryDate, formatDate, formatPrice, parseLocalDate, toISODate } from '@/lib/warranty';
 import { useItems } from '@/store/items';
 import { CATEGORIES, type Category, type WarrantyItem } from '@/types/item';
+import { AmbientBackdrop } from '@/components/ui/ambient-backdrop';
+import { ScreenTint } from '@/constants/design';
+// Aliased: this screen already has its own openAttachment for share/open-in.
+import { openAttachment as previewAttachment } from '@/lib/open-attachment';
 
 if (Platform.OS === 'android') {
   UIManager.setLayoutAnimationEnabledExperimental?.(true);
@@ -474,7 +478,15 @@ function ItemForm({
   const native = Platform.OS === 'ios';
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.background }]}>
+    <View style={styles.screen}>
+      {/*
+        A modal is presented over the navigator, so the root backdrop sits
+        behind it rather than under it. With no ground of its own the screen
+        fell through to the presentation container — black in both
+        appearances, which read as a black bar beneath the transparent nav
+        bar in Light.
+      */}
+      <AmbientBackdrop tint={ScreenTint.warranties} />
       {/* iOS draws the modal's bar natively — glass, and the system's own
           Cancel/Save placement. Android keeps the in-flow ScreenBar. */}
       {native ? (
@@ -548,7 +560,11 @@ function ItemForm({
                   {photoUris.map((uri, index) => (
                     <Pressable
                       key={uri}
-                      onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
+                      onPress={() =>
+                        void previewAttachment(photoUris, index, () =>
+                          isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index),
+                        )
+                      }
                       onLongPress={() => setPhotoUris((current) => current.filter((p) => p !== uri))}
                       accessibilityRole="imagebutton"
                       accessibilityLabel={
