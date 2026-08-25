@@ -93,7 +93,17 @@ export function BackupProvider({ children }: { children: ReactNode }) {
 
   const ready = itemsReady && storageReady;
   const premium = Boolean(entitlement?.paid);
-  const useCloud = authProvider === 'plenum' || (authProvider === 'google' && googleBackupDestination === 'cloud');
+  /**
+   * Only a Google account can back up to Drive.
+   *
+   * Plenum and Apple sign-ins have no Google credential to authorise Drive
+   * with, so Covered's own storage is not a fallback for them — it is the only
+   * destination there is.
+   */
+  const useCloud =
+    authProvider === 'plenum' ||
+    authProvider === 'apple' ||
+    (authProvider === 'google' && googleBackupDestination === 'cloud');
 
   useEffect(() => {
     AsyncStorage.getItem(STATE_KEY)
@@ -248,7 +258,16 @@ export function BackupProvider({ children }: { children: ReactNode }) {
             `Backed up ${backupResult.itemCount} item${backupResult.itemCount === 1 ? '' : 's'}` +
             (uploaded ? ` and ${uploaded} new file${uploaded === 1 ? '' : 's'}` : '');
 
-          const isDev = entitlement?.email === 'vas93333@gmail.com' || entitlement?.email === 'vasilis@plenum.gr';
+          /**
+           * Filenames only while developing.
+           *
+           * This used to key off two hardcoded personal email addresses, which
+           * shipped those addresses inside the bundle and showed the developers
+           * a different error message from everyone else — so the detailed case
+           * was never the one being tested. __DEV__ ties it to the build
+           * instead of to a person.
+           */
+          const isDev = __DEV__;
           if (missing > 0) {
             // Dropped rather than uploaded — say so, because the item silently
             // losing its receipt is exactly what a backup is meant to prevent.

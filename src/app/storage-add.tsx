@@ -35,6 +35,10 @@ import { scanStorageViaApi } from '@/lib/api';
 import { persistPhoto, deletePhoto } from '@/lib/photos';
 import { useAuth } from '@/store/auth';
 import { useStorage, type StorageItem } from '@/store/storage';
+import { AmbientBackdrop } from '@/components/ui/ambient-backdrop';
+import { ScreenTint } from '@/constants/design';
+import * as DocumentPicker from 'expo-document-picker';
+import { openAttachment } from '@/lib/open-attachment';
 
 type ItemType = 'ticket' | 'receipt' | 'barcode' | 'other';
 
@@ -182,16 +186,39 @@ function StorageForm({
     }
   }
 
+  /**
+   * Attaching a PDF, the same way a warranty item does.
+   *
+   * The rest of this screen already handled PDFs — isPdf guards the scan path,
+   * and the tile renderer draws a document icon for them — but the picker menu
+   * never offered one, so a ticket that arrived as a PDF could not be added at
+   * all. Tickets are emailed as PDFs more often than as photos.
+   */
+  async function attachPdf() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const stored = persistPhoto(result.assets[0].uri);
+      setPhotoUris((current) => [...current, stored]);
+    } catch {
+      Alert.alert('Could not attach', 'Something went wrong opening that file.');
+    }
+  }
+
   function choosePhotoSource() {
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ['Cancel', 'Take photo', 'Choose from library'],
+          options: ['Cancel', 'Take photo', 'Choose from library', 'Attach a PDF'],
           cancelButtonIndex: 0,
         },
         (index) => {
           if (index === 1) takePhoto();
           if (index === 2) void pickFromLibrary();
+          if (index === 3) void attachPdf();
         },
       );
       return;
@@ -199,6 +226,7 @@ function StorageForm({
     Alert.alert('Add ticket or card', undefined, [
       { text: 'Take photo', onPress: () => takePhoto() },
       { text: 'Choose from library', onPress: () => void pickFromLibrary() },
+      { text: 'Attach a PDF', onPress: () => void attachPdf() },
       { text: 'Cancel', style: 'cancel' },
     ]);
   }
@@ -248,7 +276,15 @@ function StorageForm({
   const native = Platform.OS === 'ios';
 
   return (
-    <View style={[styles.screen, { backgroundColor: theme.background }]}>
+    <View style={styles.screen}>
+      {/*
+        A modal is presented over the navigator, so the root backdrop sits
+        behind it rather than under it. With no ground of its own the screen
+        fell through to the presentation container — black in both
+        appearances, which read as a black bar beneath the transparent nav
+        bar in Light.
+      */}
+      <AmbientBackdrop tint={ScreenTint.storage} />
       {native ? (
         <Stack.Screen
           options={{
@@ -313,7 +349,11 @@ function StorageForm({
                   {photoUris.map((uri, index) => (
                     <Pressable
                       key={uri}
-                      onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
+                      onPress={() =>
+                        void openAttachment(photoUris, index, () =>
+                          isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index),
+                        )
+                      }
                       style={styles.thumbnailWrapper}>
                       <Animated.View entering={FadeInDown.duration(Motion.standard)}>
                         {isPdf(uri) ? (

@@ -4,6 +4,8 @@ import { Pressable, StyleSheet, View, type ViewStyle } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ListMetrics, Radius, Spacing, type ThemeColor } from '@/constants/theme';
+import { GlassRadius } from '@/constants/design';
+import { GlassCard } from '@/components/ui/glass-card';
 import { useTheme } from '@/hooks/use-theme';
 
 /**
@@ -32,7 +34,7 @@ export function Section({
         </ThemedText>
       ) : null}
 
-      <View style={[styles.card, { backgroundColor: theme.card }]}>
+      <GlassCard radius={GlassRadius.row} style={styles.card}>
         {rows.map((row, index) => (
           <Fragment key={index}>
             {index > 0 && (
@@ -41,7 +43,7 @@ export function Section({
             {row}
           </Fragment>
         ))}
-      </View>
+      </GlassCard>
 
       {footer ? (
         <ThemedText type="footnote" themeColor="textSecondary" style={styles.footer}>
@@ -146,8 +148,8 @@ const styles = StyleSheet.create({
   },
   card: {
     marginHorizontal: ListMetrics.horizontalInset,
-    borderRadius: Radius.md,
-    overflow: 'hidden',
+    // GlassCard applies the radius and its own padding; rows bring theirs.
+    padding: 0,
   },
   separator: {
     height: StyleSheet.hairlineWidth,

@@ -29,6 +29,7 @@ import {
 } from '@/lib/warranty';
 import { useItems } from '@/store/items';
 import { displayName, isPdf } from '@/lib/attachments';
+import { openAttachment as previewAttachment } from '@/lib/open-attachment';
 
 const STATUS_COLOR = { active: 'success', expiring: 'warning', expired: 'danger' } as const;
 
@@ -144,7 +145,11 @@ export default function ItemDetailScreen() {
           {item.photoUris.map((uri, index) => (
             <Pressable
               key={uri}
-              onPress={() => (isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index))}
+              onPress={() =>
+                void previewAttachment(item.photoUris, index, () =>
+                  isPdf(uri) ? setPdfUri(uri) : setViewerIndex(index),
+                )
+              }
               accessibilityRole="imagebutton"
               accessibilityLabel={isPdf(uri) ? 'Open PDF' : 'Open photo full screen'}
               style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1 }]}>

@@ -1,4 +1,3 @@
-import { Picker } from '@expo/ui/community/picker';
 import * as Haptics from 'expo-haptics';
 import { useEffect, useRef } from 'react';
 import { Platform, ScrollView, StyleSheet, View, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
@@ -26,49 +25,16 @@ export function WheelPicker<T extends string | number>(props: {
   width?: number;
 }) {
   /**
-   * iOS gets the real UIPickerView — the system wheel, with its own detent
-   * feel and haptics. Android keeps the hand-built wheel below: the native
-   * Android picker is a dropdown, and this control is two wheels side by
-   * side, which a pair of dropdowns does not read as.
+   * The hand-built wheel on every platform, including iOS.
+   *
+   * `@expo/ui`'s Picker looked like the right call — the real UIPickerView —
+   * but in SDK 57 it ignored `selectedValue` (a sheet defaulting to 30 opened
+   * showing 1) and swallowed drags without ever calling `onValueChange`, so a
+   * custom cover length could not be set at all. It also handed numeric values
+   * back as strings, which turned "31 days" into years downstream. This wheel
+   * is plain React Native and behaves the same on both platforms.
    */
-  if (Platform.OS === 'ios') return <NativeWheel {...props} />;
   return <FallbackWheel {...props} />;
-}
-
-function NativeWheel<T extends string | number>({
-  values,
-  value,
-  onChange,
-  format,
-  width,
-}: {
-  values: readonly T[];
-  value: T;
-  onChange: (value: T) => void;
-  format?: (value: T) => string;
-  width?: number;
-}) {
-  const theme = useTheme();
-
-  return (
-    <Picker
-      selectedValue={value}
-      onValueChange={(next) => {
-        if (next === value) return;
-        Haptics.selectionAsync();
-        onChange(next as T);
-      }}
-      style={[styles.wheel, width ? { width } : styles.flex]}>
-      {values.map((entry) => (
-        <Picker.Item
-          key={String(entry)}
-          label={format ? format(entry) : String(entry)}
-          value={entry}
-          style={{ color: String(theme.text) }}
-        />
-      ))}
-    </Picker>
-  );
 }
 
 function FallbackWheel<T extends string | number>({

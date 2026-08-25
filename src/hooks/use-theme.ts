@@ -7,6 +7,7 @@ import { Color } from 'expo-router';
 import { useMemo } from 'react';
 import { Platform, type ColorValue } from 'react-native';
 
+import { FORCE_DARK } from '@/constants/design';
 import { Accents, Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useSettings } from '@/store/settings';
@@ -19,6 +20,9 @@ import { useSettings } from '@/store/settings';
 export function useResolvedScheme(): 'light' | 'dark' {
   const system = useColorScheme();
   const { appearance } = useSettings();
+
+  /** Kept as an escape hatch; see the note on FORCE_DARK in constants/design. */
+  if (FORCE_DARK) return 'dark';
 
   if (appearance === 'light' || appearance === 'dark') return appearance;
   return system === 'dark' ? 'dark' : 'light';
@@ -47,7 +51,14 @@ export function useTheme() {
       ...hex,
       ...(ios
         ? {
-            background: Color.ios.systemGroupedBackground,
+            /**
+             * Transparent so the ambient backdrop shows through.
+             *
+             * systemGroupedBackground is opaque, so keeping it here painted a
+             * flat grey over the backdrop on every screen and the glass had
+             * nothing to sample but that grey.
+             */
+            background: 'transparent',
             card: Color.ios.secondarySystemGroupedBackground,
             cardPressed: Color.ios.tertiarySystemGroupedBackground,
             chrome: Color.ios.systemBackground,

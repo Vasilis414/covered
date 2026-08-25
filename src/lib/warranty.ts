@@ -32,15 +32,19 @@ export function expiryDate(
 ): Date {
   const start = parseLocalDate(item.purchaseDate);
 
+  // Numbers, not whatever was stored — `setDate(day + '31')` concatenates.
+  const days = Number(item.warrantyDays) || 0;
+  const months = Number(item.warrantyMonths) || 0;
+
   // Day- and week-length cover is exact, so it bypasses the month arithmetic.
-  if (item.warrantyDays && item.warrantyDays > 0) {
+  if (days > 0) {
     const exact = new Date(start);
-    exact.setDate(exact.getDate() + item.warrantyDays);
+    exact.setDate(exact.getDate() + days);
     return exact;
   }
 
   const target = new Date(start);
-  target.setMonth(target.getMonth() + item.warrantyMonths);
+  target.setMonth(target.getMonth() + months);
   if (target.getDate() !== start.getDate()) target.setDate(0);
   return target;
 }

@@ -27,6 +27,7 @@ import {
   PRO_ENTITLEMENT_ID,
 } from '@/lib/subscriptions';
 import Purchases, { type CustomerInfo } from 'react-native-purchases';
+import * as AppleAuthentication from 'expo-apple-authentication';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -141,13 +142,15 @@ function loadGoogle(): GoogleSigninModule['GoogleSignin'] | null {
 type AuthContextValue = {
   ready: boolean;
   signedIn: boolean;
-  authProvider: 'google' | 'plenum' | null;
+  authProvider: 'google' | 'plenum' | 'apple' | null;
   entitlement: Entitlement | null;
   signingIn: boolean;
   /** False in Expo Go, where the native module is absent. */
   available: boolean;
   signIn: () => Promise<void>;
   signInWithPlenum: () => Promise<void>;
+  signInWithApple: () => Promise<void>;
+  appleAvailable: boolean;
   /** Fallback login for platforms without Google Sign-In, e.g. Expo Go. */
   signInWithCode: (code: string) => Promise<boolean>;
   signOut: () => Promise<void>;
@@ -426,9 +429,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [idToken, verifySession]);
 
-  const authProvider = useMemo<'google' | 'plenum' | null>(() => {
+  const authProvider = useMemo<'google' | 'plenum' | 'apple' | null>(() => {
     if (!idToken) return null;
     if (idToken.startsWith('plenum:')) return 'plenum';
+    if (idToken.startsWith('apple:')) return 'apple';
+    // A bare token is a Google ID token; the others carry their prefix.
     return 'google';
   }, [idToken]);
 
@@ -461,6 +466,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSigningIn(false);
     }
   }, [google, applyToken]);
+
+  /**
+   * Sign in with Apple.
+   *
+   * Required alongside Google rather than offered as a nicety: App Review
+   * guideline 4.8 expects an equivalent privacy-preserving option wherever a
+   * third-party login sets up the primary account.
+   *
+   * The token goes to the server prefixed, so the Worker routes it to Apple's
+   * verifier and namespaces the subject. Apple returns the email only on the
+   * very first authorisation, and the server persists whatever arrives then —
+   * there is no second chance to ask for it.
+   */
+  const signInWithApple = useCallback(async () => {
+    setSigningIn(true);
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      if (credential.identityToken) {
+        await applyToken(`apple:${credential.identityToken}`);
+      }
+    } catch (error) {
+      const message = String(error);
+      // ERR_REQUEST_CANCELED is the user backing out, not a failure.
+      if (!/cancel/i.test(message)) {
+        Alert.alert('Could not sign in', message);
+      }
+    } finally {
+      setSigningIn(false);
+    }
+  }, [applyToken]);
 
   const signInWithPlenum = useCallback(async () => {
     setSigningIn(true);
@@ -601,6 +641,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       available,
       signIn,
       signInWithPlenum,
+      signInWithApple,
+      /**
+       * iOS 13+ only, and never on Android or the web — the button must not
+       * appear where tapping it cannot do anything.
+       */
+      appleAvailable: Platform.OS === 'ios',
       signInWithCode,
       signOut,
       refresh,
@@ -608,7 +654,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       getAccessToken,
       setEntitlement,
     }),
-    [ready, idToken, authProvider, entitlement, signingIn, available, signIn, signInWithPlenum, signInWithCode, signOut, refresh, getIdToken, getAccessToken],
+    [ready, idToken, authProvider, entitlement, signingIn, available, signIn, signInWithPlenum, signInWithApple, signInWithCode, signOut, refresh, getIdToken, getAccessToken],
   );
 
   return <AuthContext value={value}>{children}</AuthContext>;

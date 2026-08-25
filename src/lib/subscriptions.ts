@@ -41,13 +41,14 @@ export function configureRevenueCat(): void {
   if (isConfigured || Platform.OS === 'web') return;
 
   /**
-   * TEMPORARY: forced to VERBOSE while diagnosing StoreKit error 23.
+   * Quiet in release, verbose while developing.
    *
-   * Release builds set `__DEV__` false, which drops the log level to WARN and
-   * swallows the "underlying error" that error 23 tells you to go and read.
-   * Restore the `__DEV__` ternary once purchases are confirmed working.
+   * A shipped build should not be writing purchase detail into device logs, so
+   * only debug builds get the full trace. Pin this to VERBOSE temporarily if a
+   * StoreKit error ever needs its underlying cause read on a real device — the
+   * wrapper messages alone are not enough to diagnose one.
    */
-  Purchases.setLogLevel(LOG_LEVEL.VERBOSE);
+  Purchases.setLogLevel(__DEV__ ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
   Purchases.configure({
     apiKey: REVENUECAT_API_KEY,
   });

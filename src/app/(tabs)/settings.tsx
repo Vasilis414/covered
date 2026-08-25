@@ -49,10 +49,14 @@ export default function SettingsScreen() {
     googleBackupDestination,
     setGoogleBackupDestination,
   } = useSettings();
-  const { signedIn, entitlement, signingIn, signIn, signInWithPlenum, signOut, getIdToken, refresh, authProvider } =
+  const { signedIn, entitlement, signingIn, signIn, signInWithPlenum, signInWithApple, appleAvailable, signOut, getIdToken, refresh, authProvider } =
     useAuth();
   const [busy, setBusy] = useState(false);
-  const useCloud = authProvider === 'plenum' || (authProvider === 'google' && googleBackupDestination === 'cloud');
+  // Mirrors the rule in store/backup: only Google can reach Drive.
+  const useCloud =
+    authProvider === 'plenum' ||
+    authProvider === 'apple' ||
+    (authProvider === 'google' && googleBackupDestination === 'cloud');
 
 
   // Tapping the version row a few times reveals the code field.
@@ -177,9 +181,9 @@ export default function SettingsScreen() {
         header="Account"
         footer={
           signedIn
-            ? authProvider === 'plenum'
+            ? authProvider !== 'google'
               ? entitlement?.paid
-                ? 'Subscribed via Plenum SSO — 500MB Covered Cloud storage enabled.'
+                ? `Subscribed via ${authProvider === 'apple' ? 'Apple' : 'Plenum SSO'} — 500MB Covered Cloud storage enabled.`
                 : `Free plan. ${entitlement?.scansRemaining ?? 0} AI scan${(entitlement?.scansRemaining ?? 0) === 1 ? '' : 's'} left, up to ${FREE_ITEM_LIMIT} items.`
               : entitlement?.paid
                 ? googleBackupDestination === 'drive'
@@ -190,11 +194,16 @@ export default function SettingsScreen() {
         }>
         {signedIn ? (
           <>
-            {authProvider === 'plenum' ? (
+            {/*
+              Anything but Google gets a plain row: the Drive destination
+              toggle below only means something to an account that actually
+              has a Google Drive to write to.
+            */}
+            {authProvider !== 'google' ? (
               <Row
-                title="Signed in with Plenum"
+                title={authProvider === 'apple' ? 'Signed in with Apple' : 'Signed in with Plenum'}
                 subtitle={entitlement?.paid ? 'Subscribed' : 'Free plan'}
-                icon="cloud"
+                icon={authProvider === 'apple' ? 'logo-apple' : 'cloud'}
                 iconColor={entitlement?.paid ? 'success' : 'accent'}
                 chevron={false}
               />
@@ -235,6 +244,21 @@ export default function SettingsScreen() {
               onPress={() => signIn()}
               trailing={signingIn ? <ActivityIndicator size="small" /> : undefined}
             />
+            {/*
+              A Row rather than Apple's own button, to match the Google one
+              directly above it. Apple permits a custom control provided it
+              keeps their mark and wording, which this does; the welcome sheet
+              uses their official button for the primary entry point.
+            */}
+            {appleAvailable ? (
+              <Row
+                title={signingIn ? 'Opening Apple…' : 'Sign in with Apple'}
+                icon="logo-apple"
+                chevron={false}
+                onPress={() => signInWithApple()}
+                trailing={signingIn ? <ActivityIndicator size="small" /> : undefined}
+              />
+            ) : null}
             <Row
               title={signingIn ? 'Opening Plenum…' : 'Sign in with Plenum SSO'}
               icon="cloud-outline"

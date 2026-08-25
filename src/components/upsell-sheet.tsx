@@ -7,11 +7,13 @@ import { ThemedText } from '@/components/themed-text';
 import { SheetBackdrop } from '@/components/ui/sheet-backdrop';
 import { GlassButton } from '@/components/ui/glass-button';
 import { Motion } from '@/constants/motion';
-import { ListMetrics, Radius, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { ButtonMetrics, ListMetrics, Radius, Spacing } from '@/constants/theme';
+import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 import { useAuth } from '@/store/auth';
 import { PaywallModal } from '@/components/paywall-modal';
 import { openPaywall } from '@/lib/open-paywall';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { GlassRadius } from '@/constants/design';
 
 export type UpsellReason = 'items' | 'scan' | 'scan-intro' | 'magic' | 'backup' | 'signin' | null;
 
@@ -67,8 +69,9 @@ export function UpsellSheet({
   onClose: () => void;
 }) {
   const theme = useTheme();
+  const scheme = useResolvedScheme();
   const reduceMotion = useReducedMotion();
-  const { signedIn, signIn, signingIn } = useAuth();
+  const { signedIn, signIn, signingIn, signInWithApple, appleAvailable } = useAuth();
   const copy = reason && reason !== 'signin' ? COPY[reason] : null;
 
   /**
@@ -172,6 +175,39 @@ export function UpsellSheet({
                   disabled={signingIn}
                   onPress={() => signIn()}
                 />
+                {/*
+                  Equal prominence, directly alongside Google — guideline 4.8
+                  asks for an equivalent option, not a lesser one tucked away.
+                */}
+                {appleAvailable ? (
+                  <AppleAuthentication.AppleAuthenticationButton
+                    buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                    /**
+                     * Inverted against the sheet, not fixed.
+                     *
+                     * Apple's WHITE style is a white fill with black text and
+                     * BLACK is the reverse, so each is named for its fill. The
+                     * button has to contrast with the surface it sits on, which
+                     * means black on a light sheet and white on a dark one.
+                     */
+                    buttonStyle={
+                      scheme === 'light'
+                        ? AppleAuthentication.AppleAuthenticationButtonStyle.BLACK
+                        : AppleAuthentication.AppleAuthenticationButtonStyle.WHITE
+                    }
+                    /**
+                     * Matched to GlassButton, not a pill.
+                     *
+                     * Apple clamps cornerRadius to half the height, so the 999
+                     * this used to pass produced neither a pill nor the
+                     * neighbouring button's corner — just a mismatch. Both now
+                     * read the same constant.
+                     */
+                    cornerRadius={ButtonMetrics.radius}
+                    style={styles.appleButton}
+                    onPress={() => signInWithApple()}
+                  />
+                ) : null}
                 <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
                   Premium is a separate upgrade — unlimited scanning, unlimited items and backup.
                 </ThemedText>
@@ -234,5 +270,11 @@ const styles = StyleSheet.create({
   },
   benefit: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two + 2 },
   benefitText: { flex: 1 },
+  /** Apple requires its button be shown at its own proportions. */
+  appleButton: {
+    alignSelf: 'stretch',
+    height: ButtonMetrics.height,
+    marginTop: Spacing.two,
+  },
   dismiss: { paddingVertical: Spacing.two },
 });
