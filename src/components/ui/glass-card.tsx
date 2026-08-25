@@ -39,7 +39,13 @@ export function GlassCard({
 
   if (!glassSupported) {
     return (
-      <View style={[styles.fallback, { borderRadius: radius }, style]}>
+      <View
+        style={[
+          styles.fallbackBase,
+          scheme === 'light' ? styles.fallbackLight : styles.fallbackDark,
+          { borderRadius: radius },
+          style,
+        ]}>
         {tint ? (
           <View
             style={[StyleSheet.absoluteFill, { backgroundColor: tint, opacity: 0.16, borderRadius: radius }]}
@@ -70,11 +76,25 @@ const styles = StyleSheet.create({
     padding: GlassSpacing.cardPadding,
     overflow: 'hidden',
   },
-  fallback: {
+  fallbackBase: {
     padding: GlassSpacing.cardPadding,
     overflow: 'hidden',
-    backgroundColor: 'rgba(255,255,255,0.08)',
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  /**
+   * A white wash is invisible on a white ground.
+   *
+   * The fallback used one fixed translucent white for both appearances, which
+   * works against dark but disappears completely in Light — inputs and rows
+   * lost their edges on Android, on pre-26 iOS, and anywhere Liquid Glass is
+   * unavailable. Each appearance now lifts away from its own ground.
+   */
+  fallbackDark: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
     borderColor: 'rgba(255,255,255,0.14)',
+  },
+  fallbackLight: {
+    backgroundColor: 'rgba(0,0,0,0.04)',
+    borderColor: 'rgba(0,0,0,0.10)',
   },
 });

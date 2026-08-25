@@ -4,12 +4,10 @@ import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
-import * as Sharing from 'expo-sharing';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   LayoutAnimation,
@@ -28,7 +26,6 @@ import { PdfViewer } from '@/components/pdf-viewer';
 import { PhotoViewer } from '@/components/photo-viewer';
 import { CustomWarrantySheet, type CustomWarranty } from '@/components/custom-warranty-sheet';
 import { UpsellSheet, type UpsellReason } from '@/components/upsell-sheet';
-import { Breathing } from '@/components/ui/breathing';
 import { Motion } from '@/constants/motion';
 import { ThemedText } from '@/components/themed-text';
 import { BarTextButton, ScreenBar } from '@/components/ui/screen-bar';
@@ -47,8 +44,9 @@ import type { ReceiptLineItem, ReceiptScan } from '@/lib/receipt-parse';
 import { expiryDate, formatDate, formatPrice, parseLocalDate, toISODate } from '@/lib/warranty';
 import { useItems } from '@/store/items';
 import { CATEGORIES, type Category, type WarrantyItem } from '@/types/item';
-// Aliased: this screen already has its own openAttachment for share/open-in.
 import { openAttachment as previewAttachment } from '@/lib/open-attachment';
+import { CaptureCard } from '@/components/ui/capture-card';
+import { CoverSummary } from '@/components/ui/cover-summary';
 
 if (Platform.OS === 'android') {
   UIManager.setLayoutAnimationEnabledExperimental?.(true);
@@ -351,17 +349,6 @@ function ItemForm({
   }
 
   /** PDFs can't be shown inline, so hand them to whatever app can open them. */
-  async function openAttachment(uri: string) {
-    if (!isPdf(uri)) return;
-    try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' });
-      }
-    } catch {
-      Alert.alert('Could not open', 'No app on this phone can open that file.');
-    }
-  }
-
   async function pickFromLibrary() {
     try {
       if (Platform.OS === 'ios') {
@@ -525,32 +512,14 @@ function ItemForm({
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}>
+            <CaptureCard
+              onPress={choosePhotoSource}
+              hasPhotos={photoUris.length > 0}
+              canScan={canScan}
+              scanning={scanning}
+            />
+
             <Section>
-              <Row
-                title={photoUris.length > 0 ? 'Add another photo' : 'Photograph the receipt'}
-                subtitle={
-                  photoUris.length > 0
-                    ? undefined
-                    : canScan
-                      ? 'Covered reads the shop, date and price off it'
-                      : 'Proof of purchase — what claims actually need'
-                }
-                icon="camera"
-                onPress={choosePhotoSource}
-              />
-
-              {scanning ? (
-                <Breathing>
-                  <Row
-                    title="Reading the receipt…"
-                    icon="scan"
-                    iconColor="accent"
-                    chevron={false}
-                    trailing={<ActivityIndicator size="small" />}
-                  />
-                </Breathing>
-              ) : null}
-
               {!scanning && scanNote ? (
                 <Animated.View entering={FadeInDown.duration(Motion.standard)}>
                   <Row title={scanNote} icon="sparkles" iconColor="success" chevron={false} />
@@ -658,9 +627,7 @@ function ItemForm({
               </ScrollView>
             </Section>
 
-            <Section
-              header="Covered for"
-              footer={`${boughtToday ? 'Bought today' : `Bought ${formatDate(purchaseDate)}`} · cover ends ${formatDate(expiry)}`}>
+            <Section header="Covered for">
               <View style={styles.lengthRow}>
                 {LENGTH_PRESETS.map((months) => {
                   const selected = months === warrantyMonths;
@@ -706,6 +673,11 @@ function ItemForm({
                 </Pressable>
               </View>
             </Section>
+
+            <CoverSummary
+              boughtLabel={boughtToday ? 'Bought today' : `Bought ${formatDate(purchaseDate)}`}
+              expiryLabel={formatDate(expiry)}
+            />
 
             <Section>
               <Row
