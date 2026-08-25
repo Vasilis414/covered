@@ -654,7 +654,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       getAccessToken,
       setEntitlement,
     }),
-    [ready, idToken, authProvider, entitlement, signingIn, available, signIn, signInWithPlenum, signInWithCode, signOut, refresh, getIdToken, getAccessToken],
+    [ready, idToken, authProvider, entitlement, signingIn, available, signIn, signInWithPlenum, signInWithApple, signInWithCode, signOut, refresh, getIdToken, getAccessToken],
   );
 
   return <AuthContext value={value}>{children}</AuthContext>;
