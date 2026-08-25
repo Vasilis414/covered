@@ -41,7 +41,16 @@ function RootNavigator() {
         screenOptions={{
           headerTintColor: theme.accent,
           headerTitleStyle: { color: theme.text },
-          headerStyle: { backgroundColor: 'transparent' },
+          /**
+           * Solid, not transparent.
+           *
+           * A transparent header sits over the ambient backdrop and picks up
+           * whichever colour field happens to be behind it — which read as a
+           * muddy teal bar above every modal, in both appearances. The bar is
+           * chrome rather than content, so it takes a flat ground: white in
+           * Light, black in Dark.
+           */
+          headerStyle: { backgroundColor: scheme === 'dark' ? '#000000' : '#FFFFFF' },
           /**
            * Deliberately not headerTransparent.
            *
