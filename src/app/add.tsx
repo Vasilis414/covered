@@ -557,6 +557,23 @@ function ItemForm({
                       )}
                     </Pressable>
                   ))}
+
+                  {/*
+                    The add affordance lives at the end of the strip, not above
+                    it — one surface for one job, and it stays reachable with
+                    the thumb while scrolling through what is already attached.
+                  */}
+                  <Pressable
+                    onPress={choosePhotoSource}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add another photo"
+                    style={({ pressed }) => [
+                      styles.photo,
+                      styles.addTile,
+                      { borderColor: theme.separator, opacity: pressed ? 0.6 : 1 },
+                    ]}>
+                    <Ionicons name="add" size={26} color={theme.accent} />
+                  </Pressable>
                 </ScrollView>
               ) : null}
             </Section>
@@ -801,6 +818,12 @@ const styles = StyleSheet.create({
   content: { paddingTop: Spacing.four, paddingBottom: Spacing.six },
   photoRow: { gap: Spacing.two, padding: ListMetrics.horizontalInset },
   photo: { width: 76, height: 76, borderRadius: Radius.sm },
+  addTile: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+  },
   pdfTile: { alignItems: 'center', justifyContent: 'center', gap: 2, padding: Spacing.one },
   categoryRow: { gap: Spacing.two, padding: Spacing.two + 4 },
   categoryTile: {

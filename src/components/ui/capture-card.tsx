@@ -32,29 +32,14 @@ export function CaptureCard({
 }) {
   const theme = useTheme();
 
-  /** Once something is attached this stops being the hero and becomes an add button. */
-  if (hasPhotos) {
-    return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Add another photo"
-        onPress={onPress}
-        disabled={scanning}
-        style={({ pressed }) => [
-          styles.compact,
-          {
-            borderColor: theme.separator,
-            backgroundColor: theme.fill,
-            opacity: pressed ? 0.7 : 1,
-          },
-        ]}>
-        <Ionicons name="add" size={18} color={theme.accent} />
-        <ThemedText type="callout" style={{ color: theme.accent, fontWeight: '600' }}>
-          Add another photo
-        </ThemedText>
-      </Pressable>
-    );
-  }
+  /**
+   * Nothing at all once something is attached.
+   *
+   * The add affordance moves into the thumbnail strip as a trailing tile, the
+   * way Photos and Mail do it — a separate button above a separate card of
+   * thumbnails read as two unrelated surfaces for one job.
+   */
+  if (hasPhotos) return null;
 
   return (
     <Pressable
