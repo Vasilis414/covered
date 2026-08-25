@@ -36,7 +36,7 @@ import { NativeHeaderText } from '@/components/ui/native-header-action';
 import { InputRow } from '@/components/ui/input-row';
 import { Row, Section } from '@/components/ui/list';
 import { ListMetrics, Radius, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 import { readReceipt, type ReadSource } from '@/lib/receipt-reader';
 import { FREE_ITEM_LIMIT } from '@/lib/limits';
 import { useAuth } from '@/store/auth';
@@ -47,8 +47,6 @@ import type { ReceiptLineItem, ReceiptScan } from '@/lib/receipt-parse';
 import { expiryDate, formatDate, formatPrice, parseLocalDate, toISODate } from '@/lib/warranty';
 import { useItems } from '@/store/items';
 import { CATEGORIES, type Category, type WarrantyItem } from '@/types/item';
-import { AmbientBackdrop } from '@/components/ui/ambient-backdrop';
-import { ScreenTint } from '@/constants/design';
 // Aliased: this screen already has its own openAttachment for share/open-in.
 import { openAttachment as previewAttachment } from '@/lib/open-attachment';
 
@@ -98,6 +96,7 @@ function ItemForm({
   shared?: string;
 }) {
   const theme = useTheme();
+  const scheme = useResolvedScheme();
   const router = useRouter();
   const { addItem, updateItem, items } = useItems();
   const { getIdToken, entitlement, signedIn, refresh } = useAuth();
@@ -478,15 +477,20 @@ function ItemForm({
   const native = Platform.OS === 'ios';
 
   return (
-    <View style={styles.screen}>
-      {/*
-        A modal is presented over the navigator, so the root backdrop sits
-        behind it rather than under it. With no ground of its own the screen
-        fell through to the presentation container — black in both
-        appearances, which read as a black bar beneath the transparent nav
-        bar in Light.
-      */}
-      <AmbientBackdrop tint={ScreenTint.warranties} />
+    <View
+      style={[
+        styles.screen,
+        /**
+         * A flat ground, not the ambient backdrop.
+         *
+         * The backdrop belongs to the browsing screens, where it gives the
+         * glass something to sample. A form is chrome: drifting colour behind
+         * input fields fights the content, and the nav bar sitting over it
+         * read as a muddy teal band in both appearances. Solid white in
+         * Light, black in Dark.
+         */
+        { backgroundColor: scheme === 'dark' ? '#000000' : '#FFFFFF' },
+      ]}>
       {/* iOS draws the modal's bar natively — glass, and the system's own
           Cancel/Save placement. Android keeps the in-flow ScreenBar. */}
       {native ? (

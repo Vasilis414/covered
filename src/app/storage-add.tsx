@@ -29,14 +29,12 @@ import { Row, Section } from '@/components/ui/list';
 import { Segmented } from '@/components/ui/segmented';
 import { Motion } from '@/constants/motion';
 import { Radius, Spacing, ListMetrics } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { useResolvedScheme, useTheme } from '@/hooks/use-theme';
 import { isPdf } from '@/lib/attachments';
 import { scanStorageViaApi } from '@/lib/api';
 import { persistPhoto, deletePhoto } from '@/lib/photos';
 import { useAuth } from '@/store/auth';
 import { useStorage, type StorageItem } from '@/store/storage';
-import { AmbientBackdrop } from '@/components/ui/ambient-backdrop';
-import { ScreenTint } from '@/constants/design';
 import * as DocumentPicker from 'expo-document-picker';
 import { openAttachment } from '@/lib/open-attachment';
 
@@ -67,6 +65,7 @@ function StorageForm({
   shared?: string;
 }) {
   const theme = useTheme();
+  const scheme = useResolvedScheme();
   const router = useRouter();
   const { addStorageItem, updateStorageItem } = useStorage();
   const { getIdToken } = useAuth();
@@ -276,15 +275,20 @@ function StorageForm({
   const native = Platform.OS === 'ios';
 
   return (
-    <View style={styles.screen}>
-      {/*
-        A modal is presented over the navigator, so the root backdrop sits
-        behind it rather than under it. With no ground of its own the screen
-        fell through to the presentation container — black in both
-        appearances, which read as a black bar beneath the transparent nav
-        bar in Light.
-      */}
-      <AmbientBackdrop tint={ScreenTint.storage} />
+    <View
+      style={[
+        styles.screen,
+        /**
+         * A flat ground, not the ambient backdrop.
+         *
+         * The backdrop belongs to the browsing screens, where it gives the
+         * glass something to sample. A form is chrome: drifting colour behind
+         * input fields fights the content, and the nav bar sitting over it
+         * read as a muddy teal band in both appearances. Solid white in
+         * Light, black in Dark.
+         */
+        { backgroundColor: scheme === 'dark' ? '#000000' : '#FFFFFF' },
+      ]}>
       {native ? (
         <Stack.Screen
           options={{
