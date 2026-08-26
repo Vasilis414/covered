@@ -45,10 +45,24 @@ For each product:
   the quantity prefix or the price.
 - price: the price for that line, as a number, no currency symbol.
 - brand: the manufacturer if you can tell. Omit if unsure.
-- category: exactly one of Electronics, Appliance, Furniture, Vehicle, Tools, Other.
-- warrantyMonths: how long this product is typically covered, in months. If the
-  receipt states a warranty, use that. Extended-cover plans such as AppleCare+
-  are 24. Otherwise use a sensible default for the product type.
+- category: exactly one of Electronics, Appliance, Furniture, Vehicle, Tools,
+  Service, Other. Use Service for anything sold as a term rather than an object
+  — hosting, domain registration, subscriptions, insurance, extended cover,
+  memberships, maintenance plans.
+- warrantyMonths: how long this line is covered, in months.
+  - If the line states its own period, use that and nothing else. Receipts write
+    it as "Period: 5 Aug 2026 - 5 Aug 2028", "valid for 2 years", "(1 year)",
+    "12 months" or "paid through 5 August 2027" — convert any of these to a
+    month count, and prefer an explicit end date over a stated duration when
+    both appear.
+  - Otherwise, if the receipt states a warranty, use that. Extended-cover plans
+    such as AppleCare+ are 24.
+  - Otherwise use a sensible default for the product type.
+
+Services count as purchases. A domain registration, a year of hosting, an
+insurance policy or a support plan is exactly the kind of thing this app exists
+to remind someone about, because it lapses on a stated date. Never drop a line
+merely because it is not a physical object.
 
 Numbers: much of the world writes decimals with a comma. "5,70" is 5.70 and
 "1.234,56" is 1234.56. Always return JSON numbers with a decimal point.
@@ -77,7 +91,7 @@ const RESPONSE_SCHEMA = {
           brand: { type: 'string' },
           category: {
             type: 'string',
-            enum: ['Electronics', 'Appliance', 'Furniture', 'Vehicle', 'Tools', 'Other'],
+            enum: ['Electronics', 'Appliance', 'Furniture', 'Vehicle', 'Tools', 'Service', 'Other'],
           },
           warrantyMonths: { type: 'integer' },
           claimUrl: { type: 'string' },

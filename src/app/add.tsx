@@ -47,6 +47,7 @@ import { CATEGORIES, type Category, type WarrantyItem } from '@/types/item';
 import { openAttachment as previewAttachment } from '@/lib/open-attachment';
 import { CaptureCard } from '@/components/ui/capture-card';
 import { CoverSummary } from '@/components/ui/cover-summary';
+import { ScanningCaption, ScanningOverlay } from '@/components/ui/scanning-overlay';
 
 if (Platform.OS === 'android') {
   UIManager.setLayoutAnimationEnabledExperimental?.(true);
@@ -61,6 +62,9 @@ const DEFAULT_MONTHS: Record<Category, number> = {
   Furniture: 24,
   Vehicle: 36,
   Tools: 12,
+  // A service's term is always stated on the receipt; 12 is only the
+  // fallback for when it is not.
+  Service: 12,
   Other: 12,
 };
 
@@ -555,6 +559,11 @@ function ItemForm({
                       ) : (
                         <Image source={{ uri }} style={styles.photo} contentFit="cover" />
                       )}
+                      {/*
+                        Only the newest attachment is being read — that is the
+                        one acceptPhoto just handed to the scanner.
+                      */}
+                      {scanning && index === photoUris.length - 1 ? <ScanningOverlay /> : null}
                     </Pressable>
                   ))}
 
@@ -565,6 +574,7 @@ function ItemForm({
                   */}
                   <Pressable
                     onPress={choosePhotoSource}
+                    disabled={scanning}
                     accessibilityRole="button"
                     accessibilityLabel="Add another photo"
                     style={({ pressed }) => [
@@ -576,6 +586,8 @@ function ItemForm({
                   </Pressable>
                 </ScrollView>
               ) : null}
+
+              {scanning ? <ScanningCaption /> : null}
             </Section>
 
             {detected.length > 0 ? (

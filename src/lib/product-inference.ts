@@ -115,6 +115,9 @@ export function inferWarrantyMonths(
     Furniture: 24,
     Vehicle: 36,
     Tools: 12,
+    // A service's term is always stated on the receipt; 12 is only the
+    // fallback for when it is not.
+    Service: 12,
     Other: 12,
   };
   return byCategory[category];

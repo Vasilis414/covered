@@ -12,6 +12,7 @@ export const CATEGORY_ICON: Record<Category, keyof typeof Ionicons.glyphMap> = {
   Furniture: 'bed',
   Vehicle: 'car-sport',
   Tools: 'construct',
+  Service: 'globe',
   Other: 'pricetag',
 };
 

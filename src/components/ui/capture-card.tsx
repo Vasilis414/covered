@@ -24,11 +24,18 @@ export function CaptureCard({
   hasPhotos,
   canScan,
   scanning,
+  title = 'Photograph the receipt',
+  body,
+  scanningBody = 'This takes a few seconds.',
 }: {
   onPress: () => void;
   hasPhotos: boolean;
   canScan: boolean;
   scanning: boolean;
+  /** Warranties photograph a receipt; storage photographs a ticket or pass. */
+  title?: string;
+  body?: string;
+  scanningBody?: string;
 }) {
   const theme = useTheme();
 
@@ -64,14 +71,14 @@ export function CaptureCard({
       </View>
 
       <ThemedText type="headline" style={styles.title}>
-        {scanning ? 'Reading the receipt…' : 'Photograph the receipt'}
+        {scanning ? 'Reading it now…' : title}
       </ThemedText>
 
       <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>
         {scanning
-          ? 'This takes a few seconds.'
+          ? scanningBody
           : canScan
-            ? 'Covered fills in the shop, date and price for you.'
+            ? (body ?? 'Covered fills in the shop, date and price for you.')
             : 'Proof of purchase — what a claim actually needs.'}
       </ThemedText>
     </Pressable>

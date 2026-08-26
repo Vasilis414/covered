@@ -6,7 +6,6 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -25,7 +24,7 @@ import { ThemedText } from '@/components/themed-text';
 import { BarTextButton, ScreenBar } from '@/components/ui/screen-bar';
 import { NativeHeaderText } from '@/components/ui/native-header-action';
 import { InputRow } from '@/components/ui/input-row';
-import { Row, Section } from '@/components/ui/list';
+import { Section } from '@/components/ui/list';
 import { Segmented } from '@/components/ui/segmented';
 import { Motion } from '@/constants/motion';
 import { Radius, Spacing, ListMetrics } from '@/constants/theme';
@@ -37,6 +36,8 @@ import { useAuth } from '@/store/auth';
 import { useStorage, type StorageItem } from '@/store/storage';
 import * as DocumentPicker from 'expo-document-picker';
 import { openAttachment } from '@/lib/open-attachment';
+import { CaptureCard } from '@/components/ui/capture-card';
+import { ScanningCaption, ScanningOverlay } from '@/components/ui/scanning-overlay';
 
 type ItemType = 'ticket' | 'receipt' | 'barcode' | 'other';
 
@@ -86,8 +87,17 @@ function StorageForm({
 
   const canSave = name.trim().length > 0 && !saving && !analyzing;
 
+  /**
+   * Reads a ticket, card or document — PDFs included.
+   *
+   * PDFs used to be refused outright here and in acceptPhoto, so an emailed
+   * ticket was filed with no title, no barcode and no expiry while a photo of
+   * the same ticket was read fully. The scan endpoint has always sent the real
+   * MIME type and Gemini reads PDFs natively; the guard was the only thing
+   * stopping it.
+   */
   async function analyzePhotoWithAi(uri: string) {
-    if (!uri || isPdf(uri)) return;
+    if (!uri) return;
     setAnalyzing(true);
 
     try {
@@ -129,13 +139,15 @@ function StorageForm({
   function acceptPhoto(uri: string) {
     try {
       const stored = persistPhoto(uri);
-      if (isPdf(stored)) {
-        setPdfUri(stored);
-        setPhotoUris((current) => [...current, stored]);
-      } else {
-        setPhotoUris((current) => [...current, stored]);
-        void analyzePhotoWithAi(stored);
-      }
+      setPhotoUris((current) => [...current, stored]);
+      /**
+       * No longer opens the viewer for a PDF.
+       *
+       * Attaching one threw the reader up over the form before the scan could
+       * fill anything in, so the first thing after picking a file was
+       * dismissing a viewer nobody asked for.
+       */
+      void analyzePhotoWithAi(stored);
     } catch (e) {
       console.warn('Failed to accept photo:', e);
     }
@@ -323,29 +335,15 @@ function StorageForm({
             keyboardDismissMode="on-drag"
             showsVerticalScrollIndicator={false}>
 
-            {analyzing ? (
-              <Animated.View
-                entering={FadeInDown.duration(Motion.standard)}
-                style={[styles.aiBanner, { backgroundColor: theme.fill, borderColor: theme.accent }]}>
-                <ActivityIndicator size="small" color={theme.accent} />
-                <ThemedText style={[styles.aiBannerText, { color: theme.accent }]}>
-                  AI is scanning ticket, barcode & expiry date…
-                </ThemedText>
-              </Animated.View>
-            ) : null}
-
-            <Section>
-              <Row
-                title={photoUris.length > 0 ? 'Add another photo' : 'Photograph ticket or pass'}
-                subtitle={
-                  photoUris.length > 0
-                    ? undefined
-                    : 'Covered auto-detects titles, barcodes and expiry dates'
-                }
-                icon="camera-outline"
-                onPress={choosePhotoSource}
-              />
-            </Section>
+            <CaptureCard
+              onPress={choosePhotoSource}
+              hasPhotos={photoUris.length > 0}
+              canScan
+              scanning={analyzing}
+              title="Photograph ticket or pass"
+              body="Covered reads the title, barcode and expiry off it."
+              scanningBody="Reading the barcode and expiry date."
+            />
 
             {photoUris.length > 0 ? (
               <View style={styles.thumbnailSection}>
@@ -371,9 +369,26 @@ function StorageForm({
                       <Pressable onPress={() => handleRemovePhoto(index)} style={[styles.thumbnailDelete, { backgroundColor: theme.danger }]}>
                         <Ionicons name="close" size={12} color="#fff" />
                       </Pressable>
+                      {analyzing && index === photoUris.length - 1 ? <ScanningOverlay /> : null}
                     </Pressable>
                   ))}
+
+                  {/* Add affordance lives in the strip, as on the warranty form. */}
+                  <Pressable
+                    onPress={choosePhotoSource}
+                    disabled={analyzing}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add another photo"
+                    style={({ pressed }) => [
+                      styles.thumbnail,
+                      styles.addTile,
+                      { borderColor: theme.separator, opacity: pressed ? 0.6 : 1 },
+                    ]}>
+                    <Ionicons name="add" size={26} color={theme.accent} />
+                  </Pressable>
                 </ScrollView>
+
+                {analyzing ? <ScanningCaption label="Reading the ticket…" /> : null}
               </View>
             ) : null}
 
@@ -452,21 +467,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: ListMetrics.horizontalInset,
     marginTop: Spacing.two,
   },
-  aiBanner: {
-    marginHorizontal: ListMetrics.horizontalInset,
-    marginTop: Spacing.two,
-    padding: Spacing.three,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  aiBannerText: {
-    fontSize: 13,
-    fontWeight: '600',
-    flex: 1,
-  },
   thumbnailSection: {
     paddingHorizontal: ListMetrics.horizontalInset,
   },
@@ -476,6 +476,12 @@ const styles = StyleSheet.create({
   },
   thumbnailWrapper: {
     position: 'relative',
+  },
+  addTile: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
   },
   thumbnail: {
     width: 68,

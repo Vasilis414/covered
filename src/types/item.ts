@@ -4,6 +4,13 @@ export const CATEGORIES = [
   'Furniture',
   'Vehicle',
   'Tools',
+  /**
+   * Subscriptions and services with a term: hosting, domains, extended cover,
+   * insurance. They expire on a stated date the same way a warranty does, but
+   * had no category to land in — so a receipt for one produced no line items
+   * at all rather than an item in the wrong category.
+   */
+  'Service',
   'Other',
 ] as const;
 
