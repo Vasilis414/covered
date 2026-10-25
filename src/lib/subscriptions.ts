@@ -8,11 +8,14 @@ import Purchases, {
 import RevenueCatUI, { PAYWALL_RESULT } from 'react-native-purchases-ui';
 
 /**
- * Apple App Store key. A `test_` key cannot be used here: RevenueCat
- * deliberately calls fatalError in Release builds to stop a Test Store key
- * ever reaching the App Store.
+ * Public SDK keys, one per store. A `test_` key cannot be used here:
+ * RevenueCat deliberately calls fatalError in Release builds to stop a Test
+ * Store key ever reaching the App Store.
  */
-export const REVENUECAT_API_KEY = 'appl_fRLuSpvTndPuuvpdauZkvoHuNSw';
+const REVENUECAT_APPLE_KEY = 'appl_fRLuSpvTndPuuvpdauZkvoHuNSw';
+const REVENUECAT_GOOGLE_KEY = 'goog_bWTSjhKxJMpImlZhyPtuBJXsQZl';
+export const REVENUECAT_API_KEY =
+  Platform.OS === 'android' ? REVENUECAT_GOOGLE_KEY : REVENUECAT_APPLE_KEY;
 /** Must match the entitlement identifier in the RevenueCat dashboard exactly. */
 export const PRO_ENTITLEMENT_ID = 'Covered';
 
