@@ -24,7 +24,7 @@
       "buildNumber": "3"
     },
     "android": {
-      "package": "gr.plenum.coveredapp",
+      "package": "gr.plenum.covered",
       "adaptiveIcon": {
         "backgroundColor": "#150F36",
         "foregroundImage": "./assets/images/android-icon-foreground.png"

@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import Animated, { SlideInDown, useReducedMotion } from 'react-native-reanimated';
 
 import { ThemedText } from '@/components/themed-text';
@@ -159,9 +159,19 @@ export function UpsellSheet({
                      * touch, leaving buttons dead until the screen was
                      * remounted. onDismiss fires after the window is really
                      * gone, so there is nothing left to present over.
+                     *
+                     * On Android, Modal does not fire onDismiss, so trigger
+                     * the paywall directly on close.
                      */
-                    setPendingPaywall(true);
-                    onClose();
+                    if (Platform.OS === 'ios') {
+                      setPendingPaywall(true);
+                      onClose();
+                    } else {
+                      onClose();
+                      void openPaywall().then(({ needsFallback }) => {
+                        if (needsFallback) setShowPaywall(true);
+                      });
+                    }
                   }}
                 />
                 <ThemedText type="footnote" themeColor="textSecondary" style={styles.body}>

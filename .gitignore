@@ -53,3 +53,9 @@ hermes-engine/
 
 # cloudflare tail logs
 worker/tail.jsonl
+
+# release artifacts and store-review notes (contain credentials)
+*.aab
+*.apk
+appstore-review-reply.md
+appstore-screenshots/

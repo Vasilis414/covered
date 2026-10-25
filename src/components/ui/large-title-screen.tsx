@@ -44,13 +44,11 @@ export function LargeTitleScreen({
   const scrollY = useRef(new Animated.Value(0)).current;
 
   /**
-   * The scroll view is inset by UIKit, so this only adds the nav bar.
-   *
-   * See the note on `contentInsetAdjustmentBehavior` below: the safe-area inset
-   * is applied outside React Native's layout, so adding `insets.top` here too
-   * is what buried the large title under a second inset's worth of space.
+   * The scroll view is inset by UIKit on iOS (via contentInsetAdjustmentBehavior),
+   * so on iOS this only adds the nav bar. On Android, UIKit does not exist and
+   * contentInsetAdjustmentBehavior is a no-op, so insets.top is added explicitly.
    */
-  const padTop = NAV_BAR_HEIGHT + Spacing.two;
+  const padTop = (Platform.OS === 'ios' ? 0 : insets.top) + NAV_BAR_HEIGHT + Spacing.two;
 
   const compactOpacity = scrollY.interpolate({
     inputRange: [HANDOVER_START, HANDOVER_END],

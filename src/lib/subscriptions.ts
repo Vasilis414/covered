@@ -49,11 +49,14 @@ export function configureRevenueCat(): void {
    * wrapper messages alone are not enough to diagnose one.
    */
   Purchases.setLogLevel(__DEV__ ? LOG_LEVEL.DEBUG : LOG_LEVEL.WARN);
-  Purchases.configure({
-    apiKey: REVENUECAT_API_KEY,
-  });
-
-  isConfigured = true;
+  try {
+    Purchases.configure({
+      apiKey: REVENUECAT_API_KEY,
+    });
+    isConfigured = true;
+  } catch (error) {
+    console.warn('[RevenueCat] Configure failed:', error);
+  }
 }
 
 /**
