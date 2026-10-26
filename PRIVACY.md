@@ -1,6 +1,6 @@
 # Covered — Privacy Policy
 
-**Last updated: 20 August 2026**
+**Last updated: 26 October 2026**
 
 Covered is made by Plenum, Mesogeion 109, Marousi 15126, Greece.
 Questions: **support@plenum.gr**
@@ -59,7 +59,7 @@ backups use Covered's storage.
 
 ## Purchases
 
-Subscriptions are processed by **Apple**. We never see your payment details.
+Subscriptions are processed by **Apple** (iOS) or **Google Play** (Android). We never see your payment details.
 Purchase status is handled by **RevenueCat**, which tells our server whether your
 subscription is active and when it expires. We record which account a
 subscription belongs to, so that one subscription unlocks one account.
@@ -74,7 +74,7 @@ Only the processors needed to run the features above:
 | Google Cloud Storage | Storing backups, if enabled |
 | Cloudflare | Running our server and database |
 | RevenueCat | Subscription status |
-| Apple | Payment processing |
+| Apple / Google Play | Payment processing |
 
 We do not sell your data, share it for advertising, or disclose it to anyone
 else except where the law requires it.
